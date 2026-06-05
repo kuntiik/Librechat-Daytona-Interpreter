@@ -35,6 +35,7 @@ class DaytonaGateway:
         sandbox_cpu: int | None = 1,
         sandbox_memory: int | None = 1,
         sandbox_disk: int | None = 3,
+        sandbox_image: str | None = None,
     ) -> None:
         daytona_module = None
         try:
@@ -59,6 +60,10 @@ class DaytonaGateway:
         self._sandbox_cpu = sandbox_cpu
         self._sandbox_memory = sandbox_memory
         self._sandbox_disk = sandbox_disk
+        # When a custom image is configured, the image bakes in the libs
+        # the agent needs and we skip the per-session pip priming.
+        self._sandbox_image = sandbox_image or "python:3.12"
+        self._skip_priming = bool(sandbox_image)
 
     @staticmethod
     def _field(value: Any, keys: tuple[str, ...]) -> Any:
@@ -197,7 +202,20 @@ class DaytonaGateway:
             resource_kwargs_options.append(resource_scalar_kwargs)
         if not resource_kwargs_options:
             raise RuntimeError("Custom sandbox resources are set but no supported resource payload could be built.")
-        image_kwargs_options: list[dict[str, Any]] = [{}, *({"image": image} for image in image_candidates)]
+        # Real image strings (e.g. "python:3.12") MUST be tried before an
+        # empty Image() — Daytona silently substitutes a generic shell-only
+        # base for the latter, leaving the sandbox without Python at all.
+        prioritized_images: list[Any] = []
+        for image in image_candidates:
+            if isinstance(image, str) and image:
+                prioritized_images.append(image)
+        for image in image_candidates:
+            if not isinstance(image, str):
+                prioritized_images.append(image)
+        image_kwargs_options: list[dict[str, Any]] = [
+            *({"image": image} for image in prioritized_images),
+            {},
+        ]
 
         for language_kwargs in language_kwargs_options:
             for resource_kwargs in resource_kwargs_options:
@@ -280,10 +298,70 @@ class DaytonaGateway:
             raise RuntimeError("Sandbox does not expose file system operations.")
         return fs
 
+    # Libs the agent leans on for the new 0.8.6 artifact types — keep this
+    # list short; each `pip install` adds latency to first /exec call.
+    _ARTIFACT_PACKAGES = (
+        "openpyxl",
+        "python-docx",
+        "python-pptx",
+        "pandas",
+        "matplotlib",
+        "pillow",
+        "tabulate",
+    )
+
+    def _prime_sandbox_packages(self, sandbox: Any) -> None:
+        interp = getattr(sandbox, "code_interpreter", None) or getattr(sandbox, "codeInterpreter", None)
+        if interp is None:
+            return
+        run = getattr(interp, "run_code", None) or getattr(interp, "runCode", None)
+        if not callable(run):
+            return
+        pkgs = " ".join(self._ARTIFACT_PACKAGES)
+        prime_code = (
+            "import subprocess, sys\n"
+            "r = subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', "
+            + ", ".join(repr(p) for p in self._ARTIFACT_PACKAGES)
+            + "], capture_output=True, text=True)\n"
+            "print('priming exit:', r.returncode)\n"
+            "if r.returncode != 0:\n"
+            "    sys.stderr.write(r.stderr[-1000:])\n"
+        )
+        try:
+            result = run(prime_code)
+            logger.info("Primed sandbox with %s; result=%s", pkgs, str(result)[:200])
+        except Exception as exc:
+            logger.warning("Sandbox priming failed (continuing): %r", exc)
+
     def create_sandbox(self, language: str) -> str:
+        # Bash has no dedicated Daytona image; the python sandbox carries
+        # /bin/bash plus a working python interpreter so we can bridge bash
+        # snippets through `subprocess.run` and still get sensible artifacts.
+        if language == "bash":
+            language = "python"
         creator = getattr(self._client, "create", None)
         if not callable(creator):
             raise RuntimeError("Daytona client does not expose sandbox creation.")
+
+        # Fast-path: the variant loop below has historically picked an empty
+        # `Image()` and yielded a sandbox without a python runtime. Try the
+        # known-good shape first (explicit `image="python:3.12"` + the
+        # CodeLanguage enum) before falling through to the generic search.
+        image_params_cls = getattr(self._module, "CreateSandboxFromImageParams", None)
+        code_language_cls = getattr(self._module, "CodeLanguage", None)
+        if image_params_cls is not None and language == "python":
+            try:
+                lang_value = getattr(code_language_cls, "PYTHON", "python") if code_language_cls else "python"
+                params = image_params_cls(image=self._sandbox_image, language=lang_value)
+                sandbox = creator(params)
+                sid = self._field(sandbox, ("id", "sandbox_id", "sandboxId"))
+                if sid:
+                    logger.info("Created sandbox via fast-path image=%s sandbox_id=%s", self._sandbox_image, sid)
+                    if not self._skip_priming:
+                        self._prime_sandbox_packages(sandbox)
+                    return sid
+            except Exception as exc:  # pragma: no cover - falls back below
+                logger.info("Fast-path sandbox creation failed (%r); falling back to variant search", exc)
 
         resources_value = self._build_resources_value()
         resource_scalar_kwargs = {
@@ -404,8 +482,96 @@ class DaytonaGateway:
 
         raise RuntimeError("Daytona client does not expose sandbox deletion.")
 
+    def _run_shell(self, sandbox: Any, code: str) -> dict[str, Any]:
+        # Daytona's sandbox interpreter has no bash runtime, but every
+        # python:3.12 image ships /bin/bash. Wrap the caller's shell snippet
+        # in a tiny python program that shells out via subprocess.run, then
+        # send it through `code_interpreter.run_code` — the only path that
+        # reliably routes to the sandbox's python.
+        from .config import get_settings
+        workspace = get_settings().WORKSPACE_ROOT or "/tmp/workspace"
+        wrapper = (
+            "import os, subprocess, sys\n"
+            f"os.makedirs({workspace!r}, exist_ok=True)\n"
+            "try:\n"
+            "    os.makedirs('/mnt', exist_ok=True)\n"
+            "    if not os.path.exists('/mnt/data'):\n"
+            f"        os.symlink({workspace!r}, '/mnt/data')\n"
+            "except Exception:\n"
+            "    pass\n"
+            "r = subprocess.run(['/bin/bash','-c', "
+            + repr(code)
+            + f"], capture_output=True, text=True, cwd={workspace!r})\n"
+            "sys.stdout.write(r.stdout)\n"
+            "sys.stderr.write(r.stderr)\n"
+            "sys.exit(r.returncode)\n"
+        )
+        return self._run_python_wrapper(sandbox, wrapper)
+
+    def _run_python_wrapper(self, sandbox: Any, code: str) -> dict[str, Any]:
+        # Prefer the dedicated `code_interpreter.run_code` path — that routes
+        # to the sandbox's Python runtime reliably. `process.code_run` on the
+        # same sandbox defaults to bash and ignores our wrapper.
+        interpreter = getattr(sandbox, "code_interpreter", None) or getattr(sandbox, "codeInterpreter", None)
+        if interpreter is not None:
+            run_interpreter = getattr(interpreter, "run_code", None) or getattr(interpreter, "runCode", None)
+            if callable(run_interpreter):
+                try:
+                    result = self._call_with_variants(run_interpreter, [((code,), {}), ((), {"code": code})])
+                    stdout_text = self._to_text(self._field(result, ("stdout", "output", "result"))) or ""
+                    stderr_text = self._to_text(self._field(result, ("stderr",))) or ""
+                    error_value = self._field(result, ("error",))
+                    error_text = self._to_text(error_value)
+                    if error_text:
+                        stderr_text = f"{stderr_text}\n{error_text}".strip()
+                    success = not bool(error_value)
+                    exit_code = 0 if success else 1
+                    return {
+                        "stdout": stdout_text,
+                        "stderr": stderr_text,
+                        "code": exit_code,
+                        "status": "completed" if success else "failed",
+                        "output": stdout_text or stderr_text,
+                    }
+                except Exception:
+                    pass
+        # Fallback: code_run with language=python (must go through CodeRunParams;
+        # the SDK's `code_run` ignores a bare language kwarg and defaults to bash).
+        process = getattr(sandbox, "process", None)
+        code_run = getattr(process, "code_run", None) if process is not None else None
+        if not callable(code_run):
+            raise RuntimeError("Sandbox does not expose a python code runner for the bash bridge.")
+        code_run_params_cls = getattr(self._module, "CodeRunParams", None)
+        variants: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        if code_run_params_cls is not None:
+            for kwargs in ({"language": "python"}, {"lang": "python"}):
+                try:
+                    variants.append(((code,), {"params": code_run_params_cls(**kwargs)}))
+                except TypeError:
+                    continue
+        variants.extend([((code,), {"language": "python"}), ((code,), {"lang": "python"}), ((code,), {})])
+        logger.info("BASHBRIDGE _run_python_wrapper variants=%d code_preview=%r", len(variants), code[:60])
+        result = self._call_with_variants(code_run, variants)
+        logger.info("BASHBRIDGE result type=%s repr=%r", type(result).__name__, str(result)[:300])
+        stdout_text = self._to_text(self._field(result, ("stdout", "out", "standard_output"))) or ""
+        stderr_text = self._to_text(self._field(result, ("stderr", "err", "standard_error"))) or ""
+        exit_code = self._field(result, ("code", "exit_code", "exitCode", "return_code")) or 0
+        try:
+            exit_code = int(exit_code)
+        except (TypeError, ValueError):
+            exit_code = 0
+        return {
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+            "code": exit_code,
+            "status": "completed" if exit_code == 0 else "failed",
+            "output": stdout_text or stderr_text,
+        }
+
     def run_code(self, sandbox_id: str, language: str, code: str) -> dict[str, Any]:
         sandbox = self._get_sandbox(sandbox_id)
+        if language == "bash":
+            return self._run_shell(sandbox, code)
         if language == "python":
             interpreter = getattr(sandbox, "code_interpreter", None) or getattr(sandbox, "codeInterpreter", None)
             if interpreter is not None:

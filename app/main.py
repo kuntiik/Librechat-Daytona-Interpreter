@@ -401,6 +401,7 @@ def create_app(
                 sandbox_cpu=runtime_settings.DAYTONA_SANDBOX_CPU,
                 sandbox_memory=runtime_settings.DAYTONA_SANDBOX_MEMORY,
                 sandbox_disk=runtime_settings.DAYTONA_SANDBOX_DISK,
+                sandbox_image=runtime_settings.DAYTONA_SANDBOX_IMAGE,
             )
         return runtime_gateway
 
@@ -514,7 +515,13 @@ def create_app(
                 session.session_id,
                 WORKSPACE_ROOT,
             )
-        wrapped_code_payload = _wrap_exec_code_with_compat(exec_code_payload)
+        # The compat prelude prepends Python (os.makedirs etc.); skip it for
+        # bash so the snippet stays valid shell. The bash bridge in the
+        # gateway re-wraps the call through python subprocess anyway.
+        if language == "bash":
+            wrapped_code_payload = exec_code_payload
+        else:
+            wrapped_code_payload = _wrap_exec_code_with_compat(exec_code_payload)
         try:
             run_payload = gateway_client.run_code(session.sandbox_id, language, wrapped_code_payload)
         except APIError:

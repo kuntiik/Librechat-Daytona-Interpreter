@@ -9,6 +9,9 @@ LANGUAGE_MAP = {
     "javascript": "javascript",
     "ts": "typescript",
     "typescript": "typescript",
+    "bash": "bash",
+    "sh": "bash",
+    "shell": "bash",
 }
 
 
@@ -21,7 +24,10 @@ def normalize_language(lang: str) -> str:
         raise APIError(
             status_code=422,
             code="invalid_language",
-            message=f"Unsupported language '{lang}'. Allowed: py|python, js|javascript, ts|typescript.",
+            message=(
+                f"Unsupported language '{lang}'. "
+                "Allowed: py|python, js|javascript, ts|typescript, bash|sh|shell."
+            ),
         )
     return normalized
 

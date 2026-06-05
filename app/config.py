@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     DAYTONA_SANDBOX_CPU: int = 1
     DAYTONA_SANDBOX_MEMORY: int = 1
     DAYTONA_SANDBOX_DISK: int = 3
+    # Custom sandbox image. When set, the adapter skips its per-session
+    # pip-install priming — the image is expected to carry everything
+    # the agent needs (see sandbox-image/Dockerfile).
+    DAYTONA_SANDBOX_IMAGE: str | None = None
     WORKSPACE_ROOT: str = "/workspace"
     REDIS_URL: str | None = None
     SESSION_TTL_SECONDS: int = 300
