@@ -8,6 +8,17 @@ from .errors import APIError
 from .session_store import SessionRecord, SessionStore
 
 
+def _normalized_language(language: str) -> str:
+    """Collapse languages that share one underlying sandbox.
+
+    `Gateway.create_sandbox` coerces bash -> python (the bash bridge runs
+    inside the python sandbox), so a `python` upload session and a `bash`
+    exec request live in the *same* sandbox. Comparing raw languages would
+    wrongly reject reuse with a 409, orphaning uploaded files.
+    """
+    return "python" if language == "bash" else language
+
+
 class SessionService:
     def __init__(
         self,
@@ -26,7 +37,7 @@ class SessionService:
         if session_id:
             existing = await self._store.get(session_id)
             if existing is not None:
-                if existing.language != language:
+                if _normalized_language(existing.language) != _normalized_language(language):
                     raise APIError(
                         status_code=409,
                         code="session_language_mismatch",

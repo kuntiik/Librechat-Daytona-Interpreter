@@ -217,13 +217,18 @@ def _normalize_run_payload(run_payload: Any) -> RunResult:
 
 
 def _extract_session_id_from_files(files_payload: list[Any] | None) -> str | None:
+    # LibreChat's exec request carries no top-level session_id; the binding
+    # rides inside each file ref. Upstream (BashExecutor / handlers.ts) emits
+    # those refs with the key `storage_session_id` (the codeapi contract), so
+    # check it first and fall back to the older `session_id`/`sessionId`.
     if not files_payload:
         return None
     for item in files_payload:
         if isinstance(item, dict):
-            maybe_session_id = item.get("session_id")
-            if isinstance(maybe_session_id, str) and maybe_session_id.strip():
-                return maybe_session_id.strip()
+            for key in ("storage_session_id", "session_id", "sessionId"):
+                maybe_session_id = item.get(key)
+                if isinstance(maybe_session_id, str) and maybe_session_id.strip():
+                    return maybe_session_id.strip()
     return None
 
 
@@ -677,6 +682,7 @@ def create_app(
             message="success",
             session_id=session.session_id,
             sessionId=session.session_id,
+            storage_session_id=session.session_id,
             files=uploaded_descriptors,
         )
         logger.info(

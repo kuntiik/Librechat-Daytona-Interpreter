@@ -69,6 +69,10 @@ class UploadResponse(BaseModel):
     message: str
     session_id: str
     sessionId: str | None = None
+    # LibreChat's code-file client (crud.js) reads the upload session under
+    # `storage_session_id`; without it the file's session is recorded as
+    # undefined and the subsequent /exec spins up a fresh empty sandbox.
+    storage_session_id: str | None = None
     files: list[UploadFileDescriptor]
 
 
