@@ -9,7 +9,10 @@
 #   D.assertClean(deck);            // throws on any collision/out-of-bounds
 #   await deck.save("/mnt/data/<title>.pptx");
 #
-# This script is the render + contact-sheet (fresh-eyes) step that follows.
+# This script is the render + contact-sheet (fresh-eyes) step that follows, plus
+# a render-based geometry gate (check_overlaps.py) — pdfplumber measures the REAL
+# wrapped text boxes, catching collisions assertClean misses (a wrapped title
+# spilling into content). A non-zero exit means fix coordinates and re-render.
 set -euo pipefail
 
 PPTX="${1:?usage: qa_deck.sh <deck.pptx>}"
@@ -24,4 +27,16 @@ python3 /opt/skill-tools/slides/make_contact_sheet.py "$PREVIEW"/slide*.png \
 
 echo "Slides:        $PREVIEW/slide*.png"
 echo "Contact sheet: $QA/contact-sheet.png"
+
+PDF="$PREVIEW/$(basename "${PPTX%.*}").pdf"
+set +e
+python3 /opt/skill-tools/slides/check_overlaps.py "$PDF"
+RC=$?
+set -e
+
+if [ "$RC" -ne 0 ]; then
+  echo "Geometry gate failed — fix the reported collisions in your build script, re-run it, then re-render before the visual review." >&2
+  exit "$RC"
+fi
+
 echo "Next: call the review_slides tool on the slide PNGs (fresh-eyes QA), fix, re-render."

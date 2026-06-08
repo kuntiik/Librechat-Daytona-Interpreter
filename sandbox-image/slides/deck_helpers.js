@@ -111,13 +111,34 @@ function kicker(deck, s, { id = "01", text, x = 0.6, y = 0.55, color }) {
   });
 }
 
-/** The slide's claim (a conclusion, not a topic). */
-function titleClaim(deck, s, text, { x = 0.6, y = 0.95, w = 8.6, size = 30 } = {}) {
+/**
+ * Estimate how many lines `text` wraps to in a box of width `w` at `size` pt.
+ * Slightly conservative (~0.55em average advance) so we over- rather than
+ * under-estimate height — content placed below the title never collides.
+ */
+function estimateWrappedLines(text, w, size) {
+  const charWIn = (size * 0.55) / 72;
+  const charsPerLine = Math.max(1, Math.floor(w / charWIn));
+  return String(text)
+    .split("\n")
+    .reduce((sum, seg) => sum + Math.max(1, Math.ceil(seg.length / charsPerLine)), 0);
+}
+
+/**
+ * The slide's claim (a conclusion, not a topic). The box height is sized from
+ * the estimated wrapped line count so the *declared* box matches the rendered
+ * footprint — the in-memory lint then catches a long title spilling into
+ * content. Returns the box geometry so callers can flow content below `bottom`.
+ */
+function titleClaim(deck, s, text, { x = 0.6, y = 0.95, w = 8.6, size = 30, h } = {}) {
+  const lineH = (size * 1.15) / 72;
+  const boxH = h != null ? h : Math.max(lineH, estimateWrappedLines(text, w, size) * lineH + 0.08);
   s.addText(text, {
-    x, y, w, h: 1.0,
+    x, y, w, h: boxH,
     fontFace: deck.T.head, fontSize: size, bold: true, color: fg(deck, s),
     align: "left", valign: "top", margin: 0,
   });
+  return { x, y, w, h: boxH, bottom: y + boxH };
 }
 
 /** A neutral container card with soft shadow. */
@@ -362,6 +383,6 @@ function assertClean(deck, opts = {}) {
 module.exports = {
   PALETTES, TYPE, EMU_W, EMU_H,
   palette, newDeck,
-  kicker, titleClaim, card, kpi, kpiRail, pill, bullets, hbars, timeline, footer, divider,
+  kicker, titleClaim, estimateWrappedLines, card, kpi, kpiRail, pill, bullets, hbars, timeline, footer, divider,
   lint, assertClean,
 };

@@ -5,8 +5,8 @@
 # recalc / PDF-conversion steps) without per-session pip installs.
 #
 # Built and pushed manually:
-#   docker build -t kuntik/librechat-skills:0.4 sandbox-image/
-#   docker push  kuntik/librechat-skills:0.4
+#   docker build -t kuntik/librechat-skills:0.7 sandbox-image/
+#   docker push  kuntik/librechat-skills:0.7
 #
 # Daytona requires an explicit tag — never use :latest.
 #
@@ -15,6 +15,15 @@
 # 0.4: bake the slides toolkit at /opt/skill-tools/slides — pptxgenjs builder +
 #      in-memory geometry linter (deck_helpers.js), render/contact-sheet
 #      helpers, and OpenAI deck-profile design guidance. See PROVENANCE.md.
+# 0.5: bake metric-compatible fonts (Carlito≈Calibri, Gelasio≈Georgia) + a
+#      fontconfig alias so LibreOffice renders the deck type pair faithfully;
+#      add check_overlaps.py — a render-based (pdfplumber) geometry gate that
+#      catches wrapped-title collisions the in-memory lint misses.
+# 0.6: check_overlaps.py also flags text spilling into a card (panel-intrusion);
+#      column-aware line clustering so multi-card rows aren't false-positives.
+# 0.7: fix line clustering to require true horizontal adjacency (symmetric gap),
+#      so far-apart text on a shared baseline no longer merges into one wide
+#      line that falsely "spills" across cards.
 
 FROM python:3.12-slim
 
@@ -37,11 +46,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         pandoc \
         poppler-utils qpdf \
         tesseract-ocr tesseract-ocr-eng \
-        fonts-dejavu fonts-liberation fonts-noto-core \
+        fonts-dejavu fonts-liberation fonts-noto-core fonts-crosextra-carlito \
         git curl ca-certificates gnupg \
     && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Gelasio = Georgia-metric serif (OFL, Google Fonts). Pairs with Carlito
+# (Calibri-metric, apt above) so the deck_helpers Georgia/Calibri type pair
+# renders faithfully — measured wrapping then matches what PowerPoint shows.
+# local.conf aliases Georgia->Gelasio / Calibri->Carlito for LibreOffice.
+RUN mkdir -p /usr/share/fonts/truetype/gelasio \
+    && curl -fsSL -o /usr/share/fonts/truetype/gelasio/Gelasio.ttf \
+         "https://raw.githubusercontent.com/google/fonts/main/ofl/gelasio/Gelasio%5Bwght%5D.ttf" \
+    && curl -fsSL -o /usr/share/fonts/truetype/gelasio/Gelasio-Italic.ttf \
+         "https://raw.githubusercontent.com/google/fonts/main/ofl/gelasio/Gelasio-Italic%5Bwght%5D.ttf" \
+    && curl -fsSL -o /usr/share/fonts/truetype/gelasio/OFL.txt \
+         "https://raw.githubusercontent.com/google/fonts/main/ofl/gelasio/OFL.txt"
+COPY fonts/local.conf /etc/fonts/conf.d/99-deck-fonts.conf
+RUN fc-cache -f >/dev/null
 
 # Python deps spanning all four skills + the artifact-rendering libs the
 # 0.8.6 LibreChat agent already expects.

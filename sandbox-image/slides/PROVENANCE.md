@@ -22,7 +22,8 @@ redistribute.
 |------|--------|--------|
 | `deck_helpers.js` | original | **WORKS** — pptxgenjs builder + in-memory geometry linter (`lint`/`assertClean`). The geometry gate. |
 | `render_deck.sh` | original | **WORKS** — LibreOffice + poppler render to slide PNGs. |
-| `qa_deck.sh` | original | **WORKS** — render + contact sheet, then hands off to `review_slides`. |
+| `qa_deck.sh` | original | **WORKS** — render + contact sheet + render-based gate, then hands off to `review_slides`. |
+| `check_overlaps.py` | original | **WORKS** — pdfplumber post-render gate; measures real wrapped text boxes to catch collisions `assertClean` can't (declared vs rendered height). |
 | `make_contact_sheet.py` | vendored (presentations) | **WORKS** — pure Pillow, no runtime deps. |
 | `profiles/*.md`, `templates/*.md` | vendored (presentations) | **GUIDANCE** — deck-profile playbooks, design-system + visual-QA templates. The main quality lever. |
 

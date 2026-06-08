@@ -39,13 +39,24 @@ The sandbox ships a slides toolkit at `/opt/skill-tools/slides/`:
    conclusion, light content ("sandwich").
 6. **Build** with `deck_helpers.js` on the widescreen canvas (13.333×7.5).
 7. **Geometry gate (required)** — call `D.assertClean(deck)`; it throws on any
-   text/text collision, text/image overlap, or out-of-bounds element. Fix and
-   re-run until clean, **then** `deck.save()`.
-8. **Render + visual QA** — `bash /opt/skill-tools/slides/qa_deck.sh /mnt/data/<title>.pptx`,
-   then call the **`review_slides`** tool on the slide PNGs (fresh eyes that never
-   saw your code).
-9. **Iterate** — fix every issue `review_slides` reports, re-render, re-review.
-   Do not declare done until a full pass comes back clean **after ≥1 fix cycle**.
+   text/text collision, text/image overlap, or out-of-bounds element. When it
+   reports overlaps, **fix the element coordinates in your ONE build script and
+   re-run the whole script** — fix every reported overlap at once. Do NOT
+   hand-patch the saved `.pptx`/`.js` with `sed`/`python` heredocs (fragile, and
+   it wastes turns). Keep a single canonical build script you re-run until the
+   gate passes, **then** `deck.save()`.
+8. **Render + render-based gate + visual QA** —
+   `bash /opt/skill-tools/slides/qa_deck.sh /mnt/data/<title>.pptx`. After
+   rendering it runs a **second geometry gate** (`check_overlaps.py`) that
+   measures the *real* wrapped text boxes on the LibreOffice PDF — it catches
+   collisions `assertClean` can't (e.g. a title that wraps onto a chart). If it
+   exits non-zero, fix the reported coordinates in your build script, re-run it,
+   and re-render **before** the visual review. Once it passes, call the
+   **`review_slides`** tool on the slide PNGs (fresh eyes that never saw your code).
+9. **Iterate (bounded)** — apply review fixes by editing the build script and
+   re-running it, then re-render. Do at most **2** review cycles; if issues
+   remain after that, deliver the best version and note the residual. Budget your
+   tool calls — you have a finite step limit; converge, don't thrash.
 10. **Deliver** the `.pptx` with a topic-relevant filename (never `deck.pptx` /
     `output.pptx`). Keep the response short and artifact-focused.
 
@@ -57,8 +68,10 @@ const deck = D.newDeck({ palette: "forest", title: "Q3 Operating Review", author
 
 const s = deck.slide({});                       // light content slide; {dark:true} for title/closing
 D.kicker(deck, s, { id: "01", text: "Expansion drivers" });
-D.titleClaim(deck, s, "Backlog is compounding faster than revenue.");
-D.card(deck, s, 0.6, 1.9, 5.2, 3.4);            // optional container
+const t = D.titleClaim(deck, s, "Backlog is compounding faster than revenue.");
+// titleClaim auto-sizes its box to the wrapped line count and returns it; flow
+// content below t.bottom (+ a ~0.3" gap) so a long, wrapping title never collides.
+D.card(deck, s, 0.6, Math.max(1.9, t.bottom + 0.3), 5.2, 3.4);  // optional container
 D.hbars(deck, s, [{label:"EMEA",value:42},{label:"APAC",value:31}], { x:0.9, y:2.2, w:4.6 });
 D.kpiRail(deck, s, [
   { value:"42%", label:"YoY growth", context:"vs 28% LY" },
