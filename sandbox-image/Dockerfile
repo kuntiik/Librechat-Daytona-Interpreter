@@ -5,13 +5,16 @@
 # recalc / PDF-conversion steps) without per-session pip installs.
 #
 # Built and pushed manually:
-#   docker build -t kuntik/librechat-skills:0.3 sandbox-image/
-#   docker push  kuntik/librechat-skills:0.3
+#   docker build -t kuntik/librechat-skills:0.4 sandbox-image/
+#   docker push  kuntik/librechat-skills:0.4
 #
 # Daytona requires an explicit tag — never use :latest.
 #
 # 0.3: bake sanitize_xlsx.py (strips openpyxl's x14 conditional-formatting
 #      extension that makes Excel demand "Repair" on data-bar workbooks).
+# 0.4: bake the slides toolkit at /opt/skill-tools/slides — pptxgenjs builder +
+#      in-memory geometry linter (deck_helpers.js), render/contact-sheet
+#      helpers, and OpenAI deck-profile design guidance. See PROVENANCE.md.
 
 FROM python:3.12-slim
 
@@ -77,6 +80,14 @@ COPY sanitize_xlsx.py /opt/skill-tools/sanitize_xlsx.py
 RUN chmod 0755 /opt/skill-tools/sanitize_xlsx.py \
     && ln -s /opt/skill-tools/sanitize_xlsx.py /usr/local/bin/sanitize_xlsx
 ENV PYTHONPATH=/opt/skill-tools:${PYTHONPATH}
+
+# Slides toolkit: pptxgenjs builder + in-memory geometry linter
+# (deck_helpers.js), render + contact-sheet helpers, and OpenAI deck-profile
+# design guidance. `require("/opt/skill-tools/slides/deck_helpers.js")` resolves
+# pptxgenjs via NODE_PATH above. See /opt/skill-tools/slides/PROVENANCE.md.
+COPY slides /opt/skill-tools/slides
+RUN chmod 0755 /opt/skill-tools/slides/*.sh
+ENV PATH=/opt/skill-tools/slides:${PATH}
 
 # LibreOffice needs a writable profile dir even in headless mode. The
 # skills' office/soffice.py wrapper expects this to be settable.
