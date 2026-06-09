@@ -5,8 +5,8 @@
 # recalc / PDF-conversion steps) without per-session pip installs.
 #
 # Built and pushed manually:
-#   docker build -t kuntik/librechat-skills:0.8 sandbox-image/
-#   docker push  kuntik/librechat-skills:0.8
+#   docker build -t kuntik/librechat-skills:1.1 sandbox-image/
+#   docker push  kuntik/librechat-skills:1.1
 #
 # Daytona requires an explicit tag — never use :latest.
 #
@@ -27,6 +27,19 @@
 # 0.8: add diagram primitives to deck_helpers (box/node/connector/flow) so decks
 #      stop hand-rolling raw addShape (the recurring crash source) — valid
 #      ShapeTypes only, auto-contrast text, geometry/edge anchors returned.
+# 0.9: box/node accept the options-object form (box(deck,s,{x,y,w,h,text,fill}))
+#      + text/size aliases — the form models actually call (0.8 was positional-
+#      only, so boxes collapsed to a stray default box). Plus image helpers
+#      (pickImage/guardImages/listImages) for content-matched asset selection.
+# 1.0: card/kpi/pill also accept the options-object form — pill was still
+#      positional, so pill(deck,s,{text,…}) rendered a literal "undefined" + a
+#      stray box. All geometric helpers now take {x,y,…} uniformly.
+# 1.1: add `unzip` (zip-attached asset bundles failed with "unzip: command not
+#      found"). deck_helpers gains ensureAssets()/assertAssets(): the build
+#      script fetches its OWN external images in the same exec that renders
+#      (every run_code is an isolated, ephemeral sandbox — assets cloned in a
+#      prior call are gone), and hard-fails instead of silently shipping a deck
+#      with blank holes where product images belong.
 
 FROM python:3.12-slim
 
@@ -50,7 +63,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         poppler-utils qpdf \
         tesseract-ocr tesseract-ocr-eng \
         fonts-dejavu fonts-liberation fonts-noto-core fonts-crosextra-carlito \
-        git curl ca-certificates gnupg \
+        git curl ca-certificates gnupg unzip \
     && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*

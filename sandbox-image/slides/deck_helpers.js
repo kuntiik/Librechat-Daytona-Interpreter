@@ -142,18 +142,28 @@ function titleClaim(deck, s, text, { x = 0.6, y = 0.95, w = 8.6, size = 30, h } 
   return { x, y, w, h: boxH, bottom: y + boxH };
 }
 
-/** A neutral container card with soft shadow. */
-function card(deck, s, x, y, w, h, { fill, line } = {}) {
-  const f = fill || deck.C.surface;
+/** A neutral container card with soft shadow. Accepts positional or {x,y,w,h}. */
+function card(deck, s, x, y, w, h, opts = {}) {
+  if (x !== null && typeof x === "object") {
+    opts = x;
+    ({ x, y, w, h } = opts);
+  }
+  const f = opts.fill || deck.C.surface;
   s.addShape(deck.pptx.ShapeType.roundRect, {
-    x, y, w, h, rectRadius: 0.06,
-    fill: { color: f }, line: { color: line || f, width: 1 },
-    shadow: shadow(),
+    x, y, w, h, rectRadius: opts.radius ?? 0.06,
+    fill: { color: f }, line: { color: opts.line || f, width: 1 },
+    shadow: opts.shadow === false ? undefined : shadow(),
   });
+  return geom(x, y, w, h);
 }
 
-/** Big-number stat with label beneath. value + label always both render. */
-function kpi(deck, s, x, y, w, { value, label, context, accent }) {
+/** Big-number stat with label beneath. Accepts positional or {x,y,w,value,…}. */
+function kpi(deck, s, x, y, w, opts = {}) {
+  if (x !== null && typeof x === "object") {
+    opts = x;
+    ({ x, y, w } = opts);
+  }
+  const { value, label, context, accent } = opts;
   const c = accent || deck.C.accent;
   s.addText(String(value), {
     x, y, w, h: 0.62,
@@ -181,17 +191,24 @@ function kpiRail(deck, s, items, { x = 0.6, y = 5.3, w = 12.13, gap = 0.4 } = {}
   items.forEach((it, i) => kpi(deck, s, x + i * (cw + gap), y, cw, it));
 }
 
-/** Small pill / tag. */
-function pill(deck, s, x, y, text, { fill, color } = {}) {
-  const f = fill || deck.C.accent2;
-  const c = color || deck.C.ink;
-  const w = Math.max(1.0, 0.22 + String(text).length * 0.085);
+/** Small pill / tag. Accepts positional or {x,y,text,fill,color,w,h}. */
+function pill(deck, s, x, y, text, opts = {}) {
+  if (x !== null && typeof x === "object") {
+    opts = x;
+    x = opts.x;
+    y = opts.y;
+    text = opts.text ?? opts.label;
+  }
+  const f = opts.fill || deck.C.accent2;
+  const c = opts.color || deck.C.ink;
+  const h = opts.h ?? 0.34;
+  const w = opts.w ?? Math.max(1.0, 0.22 + String(text).length * 0.085);
   s.addShape(deck.pptx.ShapeType.roundRect, {
-    x, y, w, h: 0.34, rectRadius: 0.17, fill: { color: f }, line: { color: f },
+    x, y, w, h, rectRadius: Math.min(0.17, h / 2), fill: { color: f }, line: { color: f },
   });
   s.addText(String(text), {
-    x, y, w, h: 0.34, fontFace: deck.T.body, fontSize: 9.5, bold: true,
-    color: c, align: "center", valign: "middle", margin: 0,
+    x, y, w, h, fontFace: deck.T.body, fontSize: opts.size ?? 9.5, bold: true,
+    color: c, align: "center", valign: "middle", margin: 0, fit: "shrink",
   });
   return w;
 }
@@ -375,6 +392,72 @@ function planImages(dir, plan = {}) {
     if (pick) used.add(pick);
   }
   return out;
+}
+
+/**
+ * Materialize image assets INTO THE CURRENT SANDBOX, in the same code execution
+ * that builds the deck.
+ *
+ * Every code-interpreter `run_code` call is an isolated, EPHEMERAL sandbox:
+ * files you `git clone` / download / unzip in one call are GONE by the time a
+ * later call runs the build. The "files persisted in /mnt/data" banner only
+ * covers files LibreChat tracks (uploads + prior outputs) — not assets you
+ * fetched yourself. So the build script must (re)fetch its own external assets
+ * at the top, every run. This call is idempotent: it no-ops when `dir` already
+ * holds images, and THROWS when a fetch yields none — so a deck never silently
+ * ships with blank holes where product images belong.
+ *
+ * @param {object} opts
+ * @param {string}  opts.dir    destination dir (e.g. "/mnt/data/assets")
+ * @param {string} [opts.repo]  git URL to shallow-clone into `dir`
+ * @param {string} [opts.ref]   branch/tag for the clone
+ * @param {string} [opts.zip]   path to a .zip to extract into `dir`
+ * @returns {string} `dir`
+ * @example const dir = D.ensureAssets({ dir:"/mnt/data/assets", repo:"https://github.com/acme/brand.git" });
+ */
+function ensureAssets({ dir, repo, ref, zip } = {}) {
+  const fs = require("fs");
+  const { execFileSync } = require("child_process");
+  if (!dir) throw new Error("ensureAssets: `dir` is required");
+  if (listImages(dir).length) return dir;
+  if (repo) {
+    const args = ["clone", "--depth", "1"];
+    if (ref) args.push("--branch", ref);
+    args.push(repo, dir);
+    execFileSync("git", args, { stdio: "pipe" });
+  } else if (zip) {
+    fs.mkdirSync(dir, { recursive: true });
+    execFileSync("unzip", ["-o", "-q", zip, "-d", dir], { stdio: "pipe" });
+  } else {
+    throw new Error("ensureAssets: pass `repo` (git URL) or `zip` (path)");
+  }
+  const found = listImages(dir);
+  console.error(`ensureAssets: ${found.length} image(s) under ${dir}`);
+  if (!found.length) {
+    throw new Error(
+      `ensureAssets: no images materialized under ${dir} (repo=${repo || ""} zip=${zip || ""}). ` +
+        `Fetch failed in THIS exec — refusing to build an image-less deck.`,
+    );
+  }
+  return dir;
+}
+
+/**
+ * Hard-fail if any REQUIRED role resolved to null in a planImages() result.
+ * Use this instead of `if (img) addImage(...)` guards: those silently ship a
+ * deck with blank holes where the product images should be (the exact failure
+ * a reserved-but-empty image region is). Call it right after planImages().
+ * @example const A = D.planImages(dir, plan); D.assertAssets(A, ["hero","logo"]);
+ */
+function assertAssets(plan, required = []) {
+  const missing = required.filter((r) => !plan[r]);
+  if (missing.length) {
+    throw new Error(
+      `assertAssets: required image role(s) unresolved: ${missing.join(", ")}. ` +
+        `Check include/exclude keywords and that ensureAssets() fetched assets in THIS exec.`,
+    );
+  }
+  return plan;
 }
 
 /* ------------------------------------------------------------------ *
@@ -654,7 +737,7 @@ module.exports = {
   PALETTES, TYPE, EMU_W, EMU_H,
   palette, newDeck, readableOn,
   kicker, titleClaim, estimateWrappedLines, card, kpi, kpiRail, pill, bullets, hbars, timeline, footer, divider,
-  image, listImages, scoreName, pickImage, planImages,
+  image, listImages, scoreName, pickImage, planImages, ensureAssets, assertAssets,
   box, node, connector, flow,
   lint, assertClean,
 };
