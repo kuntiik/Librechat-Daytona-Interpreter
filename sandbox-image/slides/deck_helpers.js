@@ -412,29 +412,41 @@ function geom(x, y, w, h) {
  * its geometry + edge anchors (`midRight`, `midLeft`, …) for connectors.
  */
 function box(deck, s, x, y, w, h, opts = {}) {
+  // Accept both box(deck,s,x,y,w,h,opts) and the options-object form
+  // box(deck,s,{x,y,w,h,title,body|text,fill,...}) — the latter is what callers
+  // naturally reach for (like kicker/titleClaim/flow).
+  if (x !== null && typeof x === "object") {
+    opts = x;
+    ({ x, y, w, h } = opts);
+  }
+  opts = opts || {};
   const fill = opts.fill || deck.C.surface;
   const txt = opts.color || readableOn(deck, fill);
   const pad = opts.pad ?? 0.18;
   const align = opts.align || "left";
+  const title = opts.title;
+  const body = opts.body ?? opts.text; // `text` is a common alias
+  const titleSize = opts.titleSize ?? opts.size ?? 15;
+  const bodySize = opts.bodySize ?? opts.size ?? 12;
   s.addShape(deck.pptx.ShapeType.roundRect, {
     x, y, w, h, rectRadius: opts.radius ?? 0.06,
     fill: { color: fill }, line: { color: opts.line || fill, width: 1 },
     shadow: opts.shadow === false ? undefined : shadow(),
   });
   let ty = y + pad;
-  if (opts.title) {
-    s.addText(String(opts.title), {
+  if (title) {
+    s.addText(String(title), {
       x: x + pad, y: ty, w: w - 2 * pad, h: 0.42,
-      fontFace: deck.T.head, fontSize: opts.titleSize ?? 15, bold: true,
+      fontFace: deck.T.head, fontSize: titleSize, bold: true,
       color: opts.titleColor || txt, align, valign: "top", margin: 0, fit: "shrink",
     });
     ty += 0.52;
   }
-  if (opts.body) {
-    s.addText(String(opts.body), {
+  if (body) {
+    s.addText(String(body), {
       x: x + pad, y: ty, w: w - 2 * pad, h: y + h - ty - pad,
-      fontFace: deck.T.body, fontSize: opts.bodySize ?? 12, color: txt,
-      align, valign: opts.title ? "top" : "middle", margin: 0, fit: "shrink",
+      fontFace: deck.T.body, fontSize: bodySize, color: txt,
+      align, valign: title ? "top" : "middle", margin: 0, fit: "shrink",
       lineSpacingMultiple: 1.05,
     });
   }
@@ -443,6 +455,15 @@ function box(deck, s, x, y, w, h, opts = {}) {
 
 /** A labeled circular node (uses ellipse — there is no `circle` ShapeType). */
 function node(deck, s, cx, cy, d, opts = {}) {
+  // Accept node(deck,s,{cx|x, cy|y, d|w, label|text, ...}) too.
+  if (cx !== null && typeof cx === "object") {
+    opts = cx;
+    cx = opts.cx ?? opts.x;
+    cy = opts.cy ?? opts.y;
+    d = opts.d ?? opts.w;
+  }
+  opts = opts || {};
+  if (opts.label == null && opts.text != null) opts = { ...opts, label: opts.text };
   const fill = opts.fill || deck.C.accent;
   s.addShape(deck.pptx.ShapeType.ellipse, {
     x: cx - d / 2, y: cy - d / 2, w: d, h: d,
