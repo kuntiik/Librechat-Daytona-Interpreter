@@ -5,8 +5,8 @@
 # recalc / PDF-conversion steps) without per-session pip installs.
 #
 # Built and pushed manually:
-#   docker build -t kuntik/librechat-skills:0.7 sandbox-image/
-#   docker push  kuntik/librechat-skills:0.7
+#   docker build -t kuntik/librechat-skills:0.8 sandbox-image/
+#   docker push  kuntik/librechat-skills:0.8
 #
 # Daytona requires an explicit tag — never use :latest.
 #
@@ -24,6 +24,9 @@
 # 0.7: fix line clustering to require true horizontal adjacency (symmetric gap),
 #      so far-apart text on a shared baseline no longer merges into one wide
 #      line that falsely "spills" across cards.
+# 0.8: add diagram primitives to deck_helpers (box/node/connector/flow) so decks
+#      stop hand-rolling raw addShape (the recurring crash source) — valid
+#      ShapeTypes only, auto-contrast text, geometry/edge anchors returned.
 
 FROM python:3.12-slim
 

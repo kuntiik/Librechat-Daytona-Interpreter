@@ -75,6 +75,7 @@ function newDeck(opts = {}) {
     const s = pptx.addSlide();
     s.background = { color: dark ? C.ink : C.base };
     s._deckDark = dark;
+    guardImages(s);
     return s;
   }
 
@@ -261,6 +262,254 @@ function divider(deck, s, title, { kickerText, page } = {}) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Media — aspect-safe image placement + content-aware selection.
+ *
+ * pptxgenjs stretches a bitmap to fill `w`x`h` when both are given and no
+ * `sizing` is set (anamorphic `<a:stretch><a:fillRect/>`). That distorts every
+ * non-matching ratio — a wide logo squeezed into a tall box, a square can
+ * stretched to 16:9. `guardImages` wraps a slide's `addImage` so a frame can
+ * NEVER distort: it injects `sizing` (default `contain` = whole image fits,
+ * preserving ratio; pass `fit:"cover"` for full-bleed backgrounds that may crop).
+ * ------------------------------------------------------------------ */
+
+/** Wrap `slide.addImage` so every placement is aspect-safe by default. */
+function guardImages(s) {
+  if (s._imagesGuarded) return s;
+  s._imagesGuarded = true;
+  const orig = s.addImage.bind(s);
+  s.addImage = (opts = {}) => {
+    const o = { ...opts };
+    const hasFrame = typeof o.w === "number" && typeof o.h === "number";
+    const fit = o.fit === "cover" || o.fit === "contain" ? o.fit : null;
+    delete o.fit;
+    if (hasFrame && !o.sizing && !o.srcRect) {
+      o.sizing = { type: fit || "contain", w: o.w, h: o.h };
+    }
+    return orig(o);
+  };
+  return s;
+}
+
+/**
+ * Aspect-safe image. `fit:"contain"` (default) fits the whole image inside the
+ * frame, preserving ratio; `fit:"cover"` fills the frame and may crop. Use
+ * `contain` for product cutouts and logos, `cover` for full-bleed photos.
+ */
+function image(deck, s, { path, data, x, y, w, h, fit = "contain", ...rest }) {
+  s.addImage({ path, data, x, y, w, h, sizing: { type: fit, w, h }, ...rest });
+  return geom(x, y, w, h);
+}
+
+const IMG_RE = /\.(png|jpe?g|webp|gif|bmp|tiff?)$/i;
+
+/** Recursively list image files under `dir`, sorted by path. */
+function listImages(dir) {
+  const fs = require("fs");
+  const path = require("path");
+  const out = [];
+  const walk = (d) => {
+    let entries = [];
+    try { entries = fs.readdirSync(d); } catch (e) { return; }
+    for (const f of entries) {
+      const p = path.join(d, f);
+      let st;
+      try { st = fs.statSync(p); } catch (e) { continue; }
+      if (st.isDirectory()) walk(p);
+      else if (IMG_RE.test(f)) out.push(p);
+    }
+  };
+  walk(dir);
+  return out.sort();
+}
+
+function tokens(p) {
+  const path = require("path");
+  return path.basename(p).toLowerCase().replace(IMG_RE, "").split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+/**
+ * Score a filename against include/exclude keyword lists. A single `exclude`
+ * hit disqualifies the image (returns -1) — this is how off-brand or
+ * wrong-product assets (e.g. a mocktail can in an Imuno deck) get filtered out.
+ * Otherwise the score is the count of matched `include` keywords.
+ */
+function scoreName(p, { include = [], exclude = [] } = {}) {
+  const tks = tokens(p);
+  const hit = (kw) => tks.some((t) => t.includes(kw) || kw.includes(t));
+  if (exclude.some(hit)) return -1;
+  return include.reduce((n, kw) => n + (hit(kw) ? 1 : 0), 0);
+}
+
+/**
+ * Choose the single best image for a role by CONTENT, never by array index.
+ * `images` is a list of paths (from `listImages`). Returns the highest-scoring
+ * path, or null if every candidate is excluded / none match when
+ * `requireMatch` is set.
+ * @example pickImage(imgs, { include: ["imuno","can"], exclude: ["mocktail","logo"] })
+ */
+function pickImage(images, spec = {}) {
+  const ranked = images
+    .map((p) => ({ p, score: scoreName(p, spec) }))
+    .filter((r) => r.score >= 0)
+    .sort((a, b) => b.score - a.score);
+  if (!ranked.length) return null;
+  if (spec.requireMatch && ranked[0].score === 0) return null;
+  return ranked[0].p;
+}
+
+/**
+ * Resolve a whole set of roles to images in one call. `plan` maps role name →
+ * include/exclude spec; returns role → path (or null). Distinct assets are
+ * preferred — once a path is taken by one role it is not reused unless no other
+ * candidate matches.
+ * @example planImages(dir, { hero:{include:["imuno"],exclude:["mocktail"]}, logo:{include:["logo","eagle"]} })
+ */
+function planImages(dir, plan = {}) {
+  const images = Array.isArray(dir) ? dir : listImages(dir);
+  const out = {};
+  const used = new Set();
+  for (const [role, spec] of Object.entries(plan)) {
+    const fresh = pickImage(images.filter((p) => !used.has(p)), spec);
+    const pick = fresh || pickImage(images, spec);
+    out[role] = pick || null;
+    if (pick) used.add(pick);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Diagram primitives — box / node / connector / flow.
+ *
+ * These exist so a deck never has to hand-roll raw `addShape` for flow
+ * diagrams, comparison grids, or pipelines. They use only valid pptxgenjs
+ * ShapeTypes (roundRect, ellipse, chevron, rightArrow, line), auto-pick a
+ * readable text color from the fill luminance, and return geometry + edge
+ * anchors so connectors and downstream content can align without guesswork.
+ * ------------------------------------------------------------------ */
+
+/** Pick ink or base text so it stays readable on a given fill color. */
+function readableOn(deck, hex) {
+  const c = String(hex || "").replace("#", "");
+  if (c.length < 6) return deck.C.ink;
+  const r = parseInt(c.slice(0, 2), 16);
+  const g = parseInt(c.slice(2, 4), 16);
+  const b = parseInt(c.slice(4, 6), 16);
+  const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return lum > 0.55 ? deck.C.ink : deck.C.base;
+}
+
+function geom(x, y, w, h) {
+  return {
+    x, y, w, h, right: x + w, bottom: y + h, cx: x + w / 2, cy: y + h / 2,
+    midLeft: { x, y: y + h / 2 }, midRight: { x: x + w, y: y + h / 2 },
+    midTop: { x: x + w / 2, y }, midBottom: { x: x + w / 2, y: y + h },
+  };
+}
+
+/**
+ * A titled content box (rounded rect + optional bold title + body). Text is
+ * fit-shrunk to stay inside, and the color auto-contrasts with `fill`. Returns
+ * its geometry + edge anchors (`midRight`, `midLeft`, …) for connectors.
+ */
+function box(deck, s, x, y, w, h, opts = {}) {
+  const fill = opts.fill || deck.C.surface;
+  const txt = opts.color || readableOn(deck, fill);
+  const pad = opts.pad ?? 0.18;
+  const align = opts.align || "left";
+  s.addShape(deck.pptx.ShapeType.roundRect, {
+    x, y, w, h, rectRadius: opts.radius ?? 0.06,
+    fill: { color: fill }, line: { color: opts.line || fill, width: 1 },
+    shadow: opts.shadow === false ? undefined : shadow(),
+  });
+  let ty = y + pad;
+  if (opts.title) {
+    s.addText(String(opts.title), {
+      x: x + pad, y: ty, w: w - 2 * pad, h: 0.42,
+      fontFace: deck.T.head, fontSize: opts.titleSize ?? 15, bold: true,
+      color: opts.titleColor || txt, align, valign: "top", margin: 0, fit: "shrink",
+    });
+    ty += 0.52;
+  }
+  if (opts.body) {
+    s.addText(String(opts.body), {
+      x: x + pad, y: ty, w: w - 2 * pad, h: y + h - ty - pad,
+      fontFace: deck.T.body, fontSize: opts.bodySize ?? 12, color: txt,
+      align, valign: opts.title ? "top" : "middle", margin: 0, fit: "shrink",
+      lineSpacingMultiple: 1.05,
+    });
+  }
+  return geom(x, y, w, h);
+}
+
+/** A labeled circular node (uses ellipse — there is no `circle` ShapeType). */
+function node(deck, s, cx, cy, d, opts = {}) {
+  const fill = opts.fill || deck.C.accent;
+  s.addShape(deck.pptx.ShapeType.ellipse, {
+    x: cx - d / 2, y: cy - d / 2, w: d, h: d,
+    fill: { color: fill }, line: { color: opts.line || deck.C.surface, width: opts.lineWidth ?? 1.5 },
+  });
+  if (opts.label != null) {
+    s.addText(String(opts.label), {
+      x: cx - d / 2, y: cy - d / 2, w: d, h: d,
+      fontFace: deck.T.head, fontSize: opts.size ?? 14, bold: true,
+      color: opts.color || readableOn(deck, fill), align: "center", valign: "middle",
+      margin: 0, fit: "shrink",
+    });
+  }
+  return geom(cx - d / 2, cy - d / 2, d, d);
+}
+
+/**
+ * Connector between two anchors (box geometry or a {x,y} point). Defaults to a
+ * right-arrow sitting in the gap between `from.midRight` and `to.midLeft`.
+ * style: "arrow" | "chevron" | "line".
+ */
+function connector(deck, s, from, to, opts = {}) {
+  const color = opts.color || deck.C.accent;
+  const a = from.midRight || from;
+  const b = to.midLeft || to;
+  const style = opts.style || "arrow";
+  if (style === "line") {
+    s.addShape(deck.pptx.ShapeType.line, {
+      x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y,
+      line: { color, width: opts.width ?? 2, endArrowType: opts.arrow === false ? undefined : "triangle" },
+    });
+    return;
+  }
+  const th = opts.size ?? (style === "chevron" ? 0.34 : 0.22);
+  const shape = style === "chevron" ? deck.pptx.ShapeType.chevron : deck.pptx.ShapeType.rightArrow;
+  s.addShape(shape, {
+    x: a.x + 0.04, y: (a.y + b.y) / 2 - th / 2,
+    w: Math.max(0.4, b.x - a.x - 0.08), h: th,
+    fill: { color }, line: { color },
+  });
+}
+
+/**
+ * Lay N steps out as a row of boxes with connectors between them — the common
+ * "A → B → C" flow / pipeline. steps: [{ title, body, fill, line, align }].
+ * Returns the box geometries (so you can attach more connectors or labels).
+ */
+function flow(deck, s, steps, opts = {}) {
+  const x = opts.x ?? 0.6;
+  const y = opts.y ?? 2.6;
+  const h = opts.h ?? 1.6;
+  const w = opts.w ?? EMU_W - 2 * x;
+  const gap = opts.gap ?? 0.7;
+  const n = steps.length;
+  const bw = (w - gap * (n - 1)) / n;
+  const geoms = steps.map((st, i) =>
+    box(deck, s, x + i * (bw + gap), y, bw, h, {
+      title: st.title, body: st.body, fill: st.fill, line: st.line, align: st.align || "left",
+    }),
+  );
+  for (let i = 0; i < n - 1; i += 1) {
+    connector(deck, s, geoms[i], geoms[i + 1], { style: opts.style, color: opts.connectorColor });
+  }
+  return geoms;
+}
+
+/* ------------------------------------------------------------------ *
  * In-memory geometry linter.
  *
  * The vendored OpenAI linters (pro_deck_quality_check.js,
@@ -382,7 +631,9 @@ function assertClean(deck, opts = {}) {
 
 module.exports = {
   PALETTES, TYPE, EMU_W, EMU_H,
-  palette, newDeck,
+  palette, newDeck, readableOn,
   kicker, titleClaim, estimateWrappedLines, card, kpi, kpiRail, pill, bullets, hbars, timeline, footer, divider,
+  image, listImages, scoreName, pickImage, planImages,
+  box, node, connector, flow,
   lint, assertClean,
 };

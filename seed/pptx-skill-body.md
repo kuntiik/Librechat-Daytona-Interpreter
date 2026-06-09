@@ -92,6 +92,14 @@ hbars, timeline, footer, divider`. Palettes: `forest, midnight, terracotta,
 ocean, charcoal, berry, teal` (or pass your own hex). Kickers are emitted as
 named marker/label pairs so alignment is verifiable.
 
+**Diagrams — use the primitives, never hand-roll `addShape`.** For flows,
+pipelines, comparison grids, and node diagrams use `box`, `node`, `connector`,
+and `flow` — they use only valid ShapeTypes, auto-pick readable text color from
+the fill, and return geometry + edge anchors (`midRight`, `midLeft`, …) so
+connectors align. A whole "A → B → C" row is one call:
+`D.flow(deck, s, [{title,body,fill}, …], { y, h, style:"arrow"|"chevron" })`.
+(There is no `circle` ShapeType — `node` uses `ellipse` for you.)
+
 ## Blocking anti-patterns — fix before delivery
 
 - Title states a topic instead of a conclusion; title survives a noun-swap.
