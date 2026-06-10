@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from .auth import validate_api_key
+from .buckets import BucketStore, bucket_key
 from .cleanup import SessionCleanupWorker
 from .config import Settings, get_settings
 from .daytona_gateway import DaytonaGateway
@@ -63,6 +65,17 @@ def _truncate(text: str, max_chars: int = 400) -> str:
     if len(text) <= max_chars:
         return text
     return f"{text[:max_chars]}... [truncated {len(text) - max_chars} chars]"
+
+
+def _content_disposition(filename: str) -> str:
+    # Starlette latin-1-encodes response headers, so a bare
+    # `filename="<name>"` with non-latin-1 chars (e.g. Czech `ě` in a
+    # generated `…květen.xlsx`) raises UnicodeEncodeError → 500. RFC 6266:
+    # emit an ASCII-safe fallback plus a UTF-8 `filename*` for clients that
+    # honor it.
+    ascii_fallback = filename.encode("ascii", "replace").decode("ascii").replace('"', "_")
+    encoded = quote(filename, safe="")
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
 
 
 def _get_field(value: Any, keys: tuple[str, ...]) -> Any:
@@ -232,6 +245,89 @@ def _extract_session_id_from_files(files_payload: list[Any] | None) -> str | Non
     return None
 
 
+def _form_str(form_data: Any, key: str) -> str | None:
+    value = form_data.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _bucket_refs_from_files(files_payload: list[Any] | None) -> list[tuple[str, str]]:
+    # Exec file refs carry `{ kind, id, storage_session_id, file_id, name }`.
+    # In the storage/compute split, `storage_session_id` is the bucket key the
+    # adapter returned on /upload, so it doubles as where to read the source
+    # file for copy-in. Skip refs missing a bucket key or a name.
+    if not files_payload:
+        return []
+    refs: list[tuple[str, str]] = []
+    for item in files_payload:
+        if not isinstance(item, dict):
+            continue
+        bucket = item.get("storage_session_id") or item.get("session_id") or item.get("sessionId")
+        name = item.get("name") or item.get("filename")
+        if isinstance(bucket, str) and bucket.strip() and isinstance(name, str) and name.strip():
+            refs.append((bucket.strip(), name.strip()))
+    return refs
+
+
+def _existing_workspace_basenames(gateway_client: Any, sandbox_id: str) -> set[str]:
+    try:
+        entries = gateway_client.list_files(sandbox_id, WORKSPACE_ROOT)
+    except Exception as exc:
+        logger.warning("Copy-in pre-check list_files failed for sandbox '%s': %r", sandbox_id, exc)
+        return set()
+    names: set[str] = set()
+    for entry in entries:
+        name = _get_field(entry, ("name", "filename"))
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
+def _copy_in_bucket_files(
+    bucket_store: BucketStore,
+    gateway_client: Any,
+    sandbox_id: str,
+    files_payload: list[Any] | None,
+) -> None:
+    # Copy each referenced bucket file into the sandbox `/workspace` before the
+    # run. Idempotent: files already present (by basename) are skipped, so
+    # repeated execs in one conversation don't re-copy, while a reaped+recreated
+    # sandbox (empty workspace) re-hydrates from the surviving bucket.
+    refs = _bucket_refs_from_files(files_payload)
+    if not refs:
+        return
+    existing = _existing_workspace_basenames(gateway_client, sandbox_id)
+    for bucket, name in refs:
+        try:
+            safe_name = sanitize_upload_filename(name)
+        except APIError:
+            logger.warning("Skipping copy-in of unsafe filename %r (bucket=%s)", name, bucket)
+            continue
+        if safe_name in existing:
+            continue
+        if not bucket_store.exists(bucket, name):
+            continue
+        destination_path = normalize_workspace_path(f"{WORKSPACE_ROOT}/{safe_name}")
+        try:
+            gateway_client.upload_file(sandbox_id, destination_path, bucket_store.read(bucket, name))
+            logger.info(
+                "Copied bucket file into sandbox bucket=%s name=%s sandbox_id=%s path=%s",
+                bucket,
+                safe_name,
+                sandbox_id,
+                destination_path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to copy bucket file bucket=%s name=%s sandbox_id=%s: %r",
+                bucket,
+                safe_name,
+                sandbox_id,
+                exc,
+            )
+
+
 def _is_upload_value(value: Any) -> bool:
     return isinstance(value, (UploadFile, StarletteUploadFile))
 
@@ -391,6 +487,7 @@ def create_app(
     WORKSPACE_ROOT = get_workspace_root()
     _configure_logging(runtime_settings.LOG_LEVEL)
     runtime_store = store or create_session_store(runtime_settings.REDIS_URL)
+    bucket_store = BucketStore(runtime_settings.BUCKET_ROOT)
     runtime_gateway: Any | None = gateway
     session_service: SessionService | None = (
         SessionService(runtime_store, runtime_gateway) if runtime_gateway is not None else None
@@ -443,6 +540,7 @@ def create_app(
     app.state.store = runtime_store
     app.state.gateway = runtime_gateway
     app.state.session_service = session_service
+    app.state.bucket_store = bucket_store
 
     async def require_api_key(
         x_api_key: Annotated[str | None, Header(alias="x-api-key")] = None,
@@ -506,6 +604,8 @@ def create_app(
             raise
         except Exception as exc:
             raise _daytona_error("create or fetch session", exc) from exc
+
+        _copy_in_bucket_files(bucket_store, gateway_client, session.sandbox_id, payload.files)
 
         logger.info(
             "Interface -> Daytona run_code session_id=%s sandbox_id=%s lang=%s",
@@ -604,6 +704,10 @@ def create_app(
                 session_id = maybe_session_id.strip()
                 break
 
+        identity_kind = _form_str(form_data, "kind")
+        identity_id = _form_str(form_data, "id")
+        identity_version = _form_str(form_data, "version")
+
         files: list[UploadFile | StarletteUploadFile] = []
         file_fields: list[str] = []
         for field_name, value in form_data.multi_items():
@@ -612,15 +716,90 @@ def create_app(
                 file_fields.append(field_name)
 
         logger.info(
-            "LibreChat -> interface /upload session_id=%s file_fields=%s files=%s",
+            "LibreChat -> interface /upload session_id=%s kind=%s id=%s version=%s form_keys=%s files=%s",
             session_id,
-            file_fields,
+            identity_kind,
+            identity_id,
+            identity_version,
+            [key for key, _ in form_data.multi_items()],
             [file.filename for file in files],
         )
-        service, gateway_client = _get_runtime_clients(ensure_session_service, ensure_gateway)
         if not files:
             raise APIError(status_code=400, code="no_files", message="At least one file is required.")
 
+        # Storage path: an identity (`kind`+`id`) routes the upload to a
+        # persistent bucket on the adapter host — no sandbox is created. The
+        # bucket key is returned as `storage_session_id` and round-trips on the
+        # next /exec so the files get copied into the per-conversation sandbox.
+        if identity_kind and identity_id:
+            return await _upload_to_bucket(
+                files=files,
+                kind=identity_kind,
+                identity_id=identity_id,
+                version=identity_version,
+            )
+
+        # Legacy path (chat uploads / callers that only send a session id):
+        # keep today's sandbox-backed behavior so nothing regresses.
+        return await _upload_to_sandbox(files=files, session_id=session_id)
+
+    async def _upload_to_bucket(
+        files: list[UploadFile | StarletteUploadFile],
+        kind: str,
+        identity_id: str,
+        version: str | None,
+    ) -> UploadResponse:
+        key = bucket_key(kind, identity_id, version)
+        uploaded_descriptors: list[UploadFileDescriptor] = []
+        for upload in files:
+            try:
+                payload = await _read_upload_bytes(upload, runtime_settings.UPLOAD_MAX_BYTES)
+                safe_name = sanitize_upload_filename(upload.filename or "upload.bin")
+                encoded_id = encode_file_id(normalize_workspace_path(f"{WORKSPACE_ROOT}/{safe_name}"))
+                stored_path = bucket_store.write(key, safe_name, payload)
+                logger.info(
+                    "Interface -> bucket write key=%s name=%s size=%s path=%s",
+                    key,
+                    safe_name,
+                    len(payload),
+                    stored_path,
+                )
+                uploaded_descriptors.append(
+                    UploadFileDescriptor(
+                        fileId=encoded_id,
+                        filename=safe_name,
+                        id=encoded_id,
+                        file_id=encoded_id,
+                    )
+                )
+            except APIError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Bucket upload failed. key=%s filename=%s error=%r",
+                    key,
+                    upload.filename,
+                    exc,
+                )
+                raise _daytona_error(f"store file '{upload.filename}'", exc) from exc
+            finally:
+                await upload.close()
+
+        response = UploadResponse(
+            message="success",
+            session_id=key,
+            sessionId=key,
+            storage_session_id=key,
+            files=uploaded_descriptors,
+        )
+        logger.info("Interface -> LibreChat /upload (bucket) key=%s files=%s", key, len(response.files))
+        return response
+
+    async def _upload_to_sandbox(
+        files: list[UploadFile | StarletteUploadFile],
+        session_id: str | None,
+    ) -> UploadResponse:
+        service, gateway_client = _get_runtime_clients(ensure_session_service, ensure_gateway)
         try:
             session = await service.get_or_create_upload_session(session_id=session_id, default_language="python")
         except APIError:
@@ -781,7 +960,7 @@ def create_app(
 
         descriptor = files_by_path[target_path]
         filename = descriptor.name or PurePosixPath(target_path).name
-        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        headers = {"Content-Disposition": _content_disposition(filename)}
         logger.info(
             "Interface -> LibreChat /download session_id=%s path=%s size=%s",
             session.session_id,

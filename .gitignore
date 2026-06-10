@@ -32,3 +32,6 @@ htmlcov/
 Thumbs.db
 
 .env.bak
+
+# Persistent bucket storage (storage/compute split)
+buckets/

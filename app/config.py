@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     # the agent needs (see sandbox-image/Dockerfile).
     DAYTONA_SANDBOX_IMAGE: str | None = None
     WORKSPACE_ROOT: str = "/workspace"
+    # Persistent, identity-keyed file storage on the adapter host. Files
+    # uploaded with a `kind`/`id` identity land in BUCKET_ROOT/<bucket>/ and
+    # are copied into the per-conversation sandbox on its first exec. Survives
+    # sandbox reaping and adapter restarts; a relative path resolves against
+    # the adapter's working directory.
+    BUCKET_ROOT: str = "buckets"
     REDIS_URL: str | None = None
     SESSION_TTL_SECONDS: int = 300
     CLEANUP_INTERVAL_SECONDS: int = 60

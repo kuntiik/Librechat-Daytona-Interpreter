@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
@@ -25,6 +26,7 @@ class FakeDaytonaGateway:
     def __init__(self) -> None:
         self._sandboxes: dict[str, FakeSandbox] = {}
         self._counter = 0
+        self.upload_calls: list[tuple[str, str]] = []
 
     def create_sandbox(self, language: str) -> str:
         self._counter += 1
@@ -48,6 +50,7 @@ class FakeDaytonaGateway:
     def upload_file(self, sandbox_id: str, destination_path: str, content: bytes) -> None:
         sandbox = self._sandboxes[sandbox_id]
         sandbox.files[destination_path] = content
+        self.upload_calls.append((sandbox_id, destination_path))
 
     def list_files(self, sandbox_id: str, _: str = "/workspace") -> list[dict[str, Any]]:
         sandbox = self._sandboxes[sandbox_id]
@@ -69,12 +72,13 @@ class FakeDaytonaGateway:
         sandbox.files.pop(path, None)
 
 
-def make_client() -> tuple[TestClient, FakeDaytonaGateway]:
+def make_client(bucket_root: str | None = None) -> tuple[TestClient, FakeDaytonaGateway]:
     settings = Settings(
         ADAPTER_API_KEY="test-adapter-key",
         DAYTONA_API_KEY="test-daytona-key",
         SESSION_TTL_SECONDS=1800,
         CLEANUP_INTERVAL_SECONDS=60,
+        BUCKET_ROOT=bucket_root or tempfile.mkdtemp(prefix="lc-buckets-"),
     )
     gateway = FakeDaytonaGateway()
     app = create_app(
@@ -188,4 +192,118 @@ def test_session_language_mismatch_returns_409() -> None:
     )
     assert second_response.status_code == 409
     assert second_response.json()["error"]["code"] == "session_language_mismatch"
+
+
+def _upload_to_bucket(client: TestClient, kind: str, identity_id: str, name: str, data: bytes) -> dict[str, Any]:
+    response = client.post(
+        "/upload",
+        headers={"x-api-key": "test-adapter-key"},
+        data={"kind": kind, "id": identity_id},
+        files=[("files", (name, data, "application/octet-stream"))],
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_identity_upload_writes_to_bucket_without_sandbox() -> None:
+    client, gateway = make_client()
+    body = _upload_to_bucket(client, "agent", "agent-123", "template.xlsx", b"xlsx-bytes")
+
+    assert body["storage_session_id"] == "agent:agent-123"
+    assert body["session_id"] == "agent:agent-123"
+    assert body["files"][0]["filename"] == "template.xlsx"
+    # The whole point of the split: an identity upload creates NO sandbox.
+    assert gateway._counter == 0
+    assert gateway._sandboxes == {}
+
+
+def test_skill_upload_bucket_key_includes_version() -> None:
+    client, _ = make_client()
+    response = client.post(
+        "/upload",
+        headers={"x-api-key": "test-adapter-key"},
+        data={"kind": "skill", "id": "pptx", "version": "3"},
+        files=[("files", ("editing.md", b"# skill", "text/markdown"))],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["storage_session_id"] == "skill:pptx:v:3"
+
+
+def test_exec_copies_bucket_files_into_conversation_sandbox() -> None:
+    client, gateway = make_client()
+    _upload_to_bucket(client, "agent", "promo", "_TEMPLATE_promo_dohoda.xlsx", b"template")
+    _upload_to_bucket(client, "agent", "promo", "product-master.xlsx", b"master")
+
+    headers = {"x-api-key": "test-adapter-key"}
+    refs = [
+        {"storage_session_id": "agent:promo", "name": "_TEMPLATE_promo_dohoda.xlsx"},
+        {"storage_session_id": "agent:promo", "name": "product-master.xlsx"},
+    ]
+    response = client.post(
+        "/exec",
+        headers=headers,
+        json={"code": "print('build')", "lang": "python", "session_id": "conv-1", "files": refs},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["session_id"] == "conv-1"
+    listed = sorted(f["filename"] for f in body["files"])
+    assert listed == ["_TEMPLATE_promo_dohoda.xlsx", "product-master.xlsx"]
+    # One sandbox keyed by the conversation, both bucket files copied in.
+    assert gateway._counter == 1
+
+
+def test_exec_copy_in_is_idempotent_across_turns() -> None:
+    client, gateway = make_client()
+    _upload_to_bucket(client, "agent", "promo", "data.csv", b"col\n1\n")
+    headers = {"x-api-key": "test-adapter-key"}
+    refs = [{"storage_session_id": "agent:promo", "name": "data.csv"}]
+
+    first = client.post(
+        "/exec",
+        headers=headers,
+        json={"code": "print(1)", "lang": "python", "session_id": "conv-2", "files": refs},
+    )
+    assert first.status_code == 200
+    second = client.post(
+        "/exec",
+        headers=headers,
+        json={"code": "print(2)", "lang": "python", "session_id": "conv-2", "files": refs},
+    )
+    assert second.status_code == 200
+    # Copied once on turn 1; turn 2 sees it already present and skips the copy.
+    copy_ins = [path for _, path in gateway.upload_calls if path.endswith("data.csv")]
+    assert len(copy_ins) == 1
+
+
+def test_two_conversations_get_isolated_sandboxes() -> None:
+    client, gateway = make_client()
+    _upload_to_bucket(client, "agent", "shared", "data.csv", b"x")
+    headers = {"x-api-key": "test-adapter-key"}
+    refs = [{"storage_session_id": "agent:shared", "name": "data.csv"}]
+
+    for conversation_id in ("conv-A", "conv-B"):
+        response = client.post(
+            "/exec",
+            headers=headers,
+            json={"code": "print(1)", "lang": "python", "session_id": conversation_id, "files": refs},
+        )
+        assert response.status_code == 200
+        assert [f["filename"] for f in response.json()["files"]] == ["data.csv"]
+
+    # Two distinct sandboxes, each independently hydrated from the one bucket.
+    assert gateway._counter == 2
+
+
+def test_legacy_upload_without_identity_still_uses_sandbox() -> None:
+    client, gateway = make_client()
+    response = client.post(
+        "/upload",
+        headers={"x-api-key": "test-adapter-key"},
+        files=[("files", ("legacy.txt", b"hi", "text/plain"))],
+    )
+    assert response.status_code == 200, response.text
+    # No identity -> falls back to the sandbox-backed path (one sandbox created).
+    assert gateway._counter == 1
+    assert response.json()["files"][0]["filename"] == "legacy.txt"
 
