@@ -100,6 +100,35 @@ connectors align. A whole "A → B → C" row is one call:
 `D.flow(deck, s, [{title,body,fill}, …], { y, h, style:"arrow"|"chevron" })`.
 (There is no `circle` ShapeType — `node` uses `ellipse` for you.)
 
+For any slide that pairs a horizontal flow row with explanatory notes below it,
+you **MUST** use `D.safeFlowWithNotes(deck, s, steps, { y, h, notes })`. Do
+**NOT** hand-place headings or text in the band beneath a `D.flow` — that is the
+single most common cause of center-band collisions. The helper starts the note
+columns at least `0.45"` below the flow and throws if there is not enough
+vertical room, so wrapped flow labels and arrows can never overlap the notes.
+Example:
+
+```js
+const t = D.titleClaim(deck, s, "Users judge the artifact, not the hidden trace.");
+D.safeFlowWithNotes(deck, s, [
+  { title: "Generate", body: "Create code and artifacts." },
+  { title: "Render", body: "Export files." },
+  { title: "Judge", body: "Users infer quality." },
+], {
+  y: Math.max(2.0, t.bottom + 0.25),
+  h: 0.85,
+  style: "chevron",
+  notes: [
+    { title: "What goes wrong", items: ["Correct code can still look broken.", "Layout defects read as reasoning defects."] },
+    { title: "Why it matters", items: ["Artifacts are product surfaces.", "Readable exports raise confidence fast."] },
+  ],
+});
+```
+
+If the same slide fails geometry/render QA twice, consider rebuilding it with a
+boring safe layout (title + `safeFlowWithNotes` or title + two columns + chips)
+instead of continuing coordinate surgery.
+
 ## Blocking anti-patterns — fix before delivery
 
 - Title states a topic instead of a conclusion; title survives a noun-swap.

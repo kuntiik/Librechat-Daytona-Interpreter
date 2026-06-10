@@ -660,6 +660,133 @@ function flow(deck, s, steps, opts = {}) {
   return geoms;
 }
 
+function noteColumn(deck, s, note, x, y, w, h, opts = {}) {
+  const title = note.title ?? note.heading;
+  const items = Array.isArray(note.items) ? note.items : [];
+  const body = note.body ?? note.text;
+  const color = note.color || fg(deck, s);
+  const muted = note.muted || deck.C.muted;
+  const titleH = title ? 0.25 : 0;
+  const itemGap = opts.itemGap ?? 0.38;
+  const bullet = opts.bulletSize ?? 0.07;
+  const bulletColor = note.bulletColor || opts.bulletColor || deck.C.gold;
+  let cursor = y;
+
+  if (title) {
+    s.addText(String(title), {
+      x, y: cursor, w, h: titleH,
+      fontFace: deck.T.body, fontSize: note.titleSize ?? opts.titleSize ?? 14,
+      bold: true, color: note.titleColor || color, margin: 0,
+      align: "left", valign: "top", fit: "shrink",
+    });
+    cursor += titleH + 0.16;
+  }
+
+  if (body) {
+    const bodyH = Math.max(0.28, h - (cursor - y) - (items.length ? items.length * itemGap : 0));
+    s.addText(String(body), {
+      x, y: cursor, w, h: bodyH,
+      fontFace: deck.T.body, fontSize: note.bodySize ?? opts.bodySize ?? 12.5,
+      color: note.bodyColor || muted, margin: 0,
+      align: "left", valign: "top", fit: "shrink",
+      lineSpacingMultiple: 1.05,
+    });
+    cursor += bodyH + 0.1;
+  }
+
+  items.forEach((item, i) => {
+    const iy = cursor + i * itemGap;
+    s.addShape(deck.pptx.ShapeType.ellipse, {
+      x, y: iy + 0.08, w: bullet, h: bullet,
+      fill: { color: bulletColor }, line: { color: bulletColor },
+    });
+    s.addText(String(item), {
+      x: x + bullet + 0.11, y: iy, w: w - bullet - 0.11, h: itemGap,
+      fontFace: deck.T.body, fontSize: note.itemSize ?? opts.itemSize ?? 12.5,
+      color, margin: 0, align: "left", valign: "top", fit: "shrink",
+    });
+  });
+
+  return geom(x, y, w, h);
+}
+
+/**
+ * Safe pattern for the common "flow row + explanatory notes" slide. It
+ * guarantees the notes start below the flow by at least `minGap` (0.45in by
+ * default), which prevents headings from colliding with flow boxes/arrows when
+ * labels wrap after render. Use this instead of hand-placing text below
+ * `D.flow`.
+ *
+ * @example
+ * const t = D.titleClaim(deck, s, "Artifacts fail in the visible last mile.");
+ * D.safeFlowWithNotes(deck, s, [
+ *   { title: "Generate", body: "Create code and artifacts." },
+ *   { title: "Render", body: "Export files." },
+ *   { title: "Judge", body: "Users infer quality." },
+ * ], {
+ *   y: Math.max(2.0, t.bottom + 0.25),
+ *   h: 0.85,
+ *   notes: [
+ *     { title: "What goes wrong", items: ["Correct code can still look broken."] },
+ *     { title: "Why it matters", items: ["Artifacts are product surfaces."] },
+ *   ],
+ * });
+ */
+function safeFlowWithNotes(deck, s, steps, opts = {}) {
+  const x = opts.x ?? 0.7;
+  const y = opts.y ?? 2.2;
+  const w = opts.w ?? EMU_W - 2 * x;
+  const h = opts.h ?? 0.95;
+  const minGap = opts.minGap ?? 0.45;
+  const bottomMargin = opts.bottomMargin ?? 0.62;
+  const noteY = Math.max(opts.noteY ?? 0, y + h + minGap);
+  const noteH = opts.noteH ?? Math.max(0.9, EMU_H - bottomMargin - noteY);
+  const notes = opts.notes ?? [
+    ...(opts.left ? [opts.left] : []),
+    ...(opts.right ? [opts.right] : []),
+  ];
+
+  if (noteY + noteH > EMU_H - bottomMargin + 0.01) {
+    throw new Error(
+      `safeFlowWithNotes: not enough vertical room for notes (flow bottom ${(
+        y + h
+      ).toFixed(2)}, noteY ${noteY.toFixed(2)}, noteH ${noteH.toFixed(2)}). Move the flow up or shorten notes.`,
+    );
+  }
+
+  const flowGeoms = flow(deck, s, steps, {
+    x, y, w, h,
+    gap: opts.gap,
+    style: opts.style,
+    connectorColor: opts.connectorColor,
+  });
+
+  const noteGeoms = [];
+  if (notes.length > 0) {
+    const columnGap = opts.noteGap ?? 0.65;
+    const columnW = (w - columnGap * (notes.length - 1)) / notes.length;
+    notes.forEach((note, i) => {
+      noteGeoms.push(noteColumn(
+        deck,
+        s,
+        note,
+        x + i * (columnW + columnGap),
+        noteY,
+        columnW,
+        note.h ?? noteH,
+        opts,
+      ));
+    });
+  }
+
+  return {
+    flow: flowGeoms,
+    notes: noteGeoms,
+    noteY,
+    bottom: notes.length ? Math.max(...noteGeoms.map((g) => g.bottom)) : y + h,
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * In-memory geometry linter.
  *
@@ -793,6 +920,6 @@ module.exports = {
   palette, newDeck, readableOn,
   kicker, titleClaim, estimateWrappedLines, card, kpi, kpiRail, pill, bullets, hbars, chart, timeline, footer, divider,
   image, listImages, scoreName, pickImage, planImages, ensureAssets, assertAssets,
-  box, node, connector, flow,
+  box, node, connector, flow, safeFlowWithNotes,
   lint, assertClean,
 };
