@@ -17,9 +17,11 @@ set -euo pipefail
 
 PPTX="${1:?usage: qa_deck.sh <deck.pptx>}"
 DIR="$(cd "$(dirname "$PPTX")" && pwd)"
-PREVIEW="$DIR/preview"
+# Slides render into $DIR itself (NOT a subdir): LibreChat only persists files
+# at the workspace root, and review_slides can only see persisted files.
+PREVIEW="$DIR"
 QA="$DIR/qa"
-mkdir -p "$PREVIEW" "$QA"
+mkdir -p "$QA"
 
 bash /opt/skill-tools/slides/render_deck.sh "$PPTX" "$PREVIEW" >/dev/null
 python3 /opt/skill-tools/slides/make_contact_sheet.py "$PREVIEW"/slide*.png \

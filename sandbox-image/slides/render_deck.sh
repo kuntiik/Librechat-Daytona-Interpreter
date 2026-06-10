@@ -14,5 +14,6 @@ base="$(basename "${PPTX%.*}")"
 PDF="$OUT/$base.pdf"
 [ -f "$PDF" ] || { echo "render failed: $PDF not produced" >&2; exit 1; }
 
+rm -f "$OUT"/slide-*.png
 pdftoppm -png -r 150 "$PDF" "$OUT/slide"
 ls "$OUT"/slide*.png

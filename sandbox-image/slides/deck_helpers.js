@@ -50,6 +50,18 @@ function palette(name) {
   return PALETTES[name] || PALETTES.forest;
 }
 
+/** Methods models reach for on `deck` that live elsewhere — fail with the fix. */
+const DECK_MISUSE = {
+  addSlide: 'use deck.slide({ dark }) — it returns the slide object',
+  writeFile: 'use deck.save("/mnt/data/<name>.pptx")',
+  write: 'use deck.save("/mnt/data/<name>.pptx")',
+  addText: 'call it on a slide: const s = deck.slide({}); s.addText(...)',
+  addTable: 'call it on a slide: s.addTable(rows, opts)',
+  addChart: 'use D.chart(deck, s, "bar"|"line", data, opts)',
+  addImage: 'use D.image(deck, s, { path, x, y, w, h })',
+  addShape: 'use D.box/node/connector/flow, or s.addShape(...) on a slide',
+};
+
 /**
  * Create a deck with the widescreen canvas and theme locked in.
  * @returns {{pptx: object, C: object, T: object, slide: Function, save: Function}}
@@ -77,6 +89,14 @@ function newDeck(opts = {}) {
     s._deckDark = dark;
     guardImages(s);
     return s;
+  }
+
+  for (const [name, hint] of Object.entries(DECK_MISUSE)) {
+    Object.defineProperty(deck, name, {
+      get() {
+        throw new TypeError(`deck.${name} does not exist — ${hint}.`);
+      },
+    });
   }
 
   return deck;
@@ -239,6 +259,33 @@ function hbars(deck, s, data, { x = 0.6, y = 1.9, w = 6.2, rowH = 0.5, max, acce
     const bw = Math.max(0.04, trackW * (d.value / top));
     s.addShape(deck.pptx.ShapeType.rect, { x: trackX, y: ry + rowH / 2 - 0.07, w: bw, h: 0.14, fill: { color: c }, line: { color: c } });
     s.addText(String(d.display != null ? d.display : d.value), { x: trackX + bw + 0.1, y: ry, w: 0.8, h: rowH, fontFace: deck.T.body, fontSize: 11, bold: true, color: fg(deck, s), align: "left", valign: "middle", margin: 0 });
+  });
+}
+
+/**
+ * Native editable chart (the proof object for data slides). type: "bar" | "line".
+ * data: [{ name, labels: [...], values: [...] }] — one entry per series.
+ * Wraps s.addChart with palette colors, theme fonts, and readable axis text.
+ */
+function chart(deck, s, type, data, opts = {}) {
+  if (type !== "bar" && type !== "line") {
+    throw new TypeError(`chart type "${type}" is not supported — use "bar" or "line".`);
+  }
+  const text = fg(deck, s);
+  const colors = (opts.colors || [deck.C.accent, deck.C.gold, deck.C.accent2, deck.C.muted])
+    .slice(0, Math.max(1, data.length));
+  s.addChart(deck.pptx.ChartType[type], data, {
+    x: opts.x ?? 0.9, y: opts.y ?? 2.1, w: opts.w ?? 6.2, h: opts.h ?? 4.2,
+    chartColors: colors,
+    barDir: "col",
+    showLegend: opts.showLegend ?? data.length > 1,
+    legendPos: "b", legendColor: text, legendFontFace: deck.T.body, legendFontSize: 11,
+    showValue: opts.showValue ?? true,
+    dataLabelColor: text, dataLabelFontFace: deck.T.body, dataLabelFontSize: 10,
+    catAxisLabelColor: text, catAxisLabelFontFace: deck.T.body, catAxisLabelFontSize: 11,
+    valAxisLabelColor: deck.C.muted, valAxisLabelFontFace: deck.T.body, valAxisLabelFontSize: 10,
+    lineSize: type === "line" ? 2.5 : undefined,
+    ...opts.chartOpts,
   });
 }
 
@@ -628,6 +675,13 @@ function num(v) {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+const EMU_PER_IN = 914400;
+
+/** pptxgenjs stores TABLE geometry pre-converted to EMU; everything else stays in inches. */
+function emuToIn(v) {
+  return Math.abs(v) > 100 ? v / EMU_PER_IN : v;
+}
+
 function hasRealText(t) {
   if (typeof t === "string") return t.trim() !== "";
   if (Array.isArray(t)) return t.some((r) => r && typeof r.text === "string" && r.text.trim() !== "");
@@ -644,8 +698,9 @@ function extractElements(slide) {
   const out = [];
   objs.forEach((obj, index) => {
     const o = obj.options || obj.data || {};
-    const x = num(o.x), y = num(o.y), w = num(o.w), h = num(o.h);
+    let x = num(o.x), y = num(o.y), w = num(o.w), h = num(o.h);
     if (x === null || y === null || w === null || h === null) return;
+    [x, y, w, h] = [x, y, w, h].map(emuToIn);
     const shapeKind = obj.shape || null;
     const isImage = obj._type === "image" || !!obj.image || !!o.path;
     const isLine = shapeKind === "line" || obj._type === "line";
@@ -736,7 +791,7 @@ function assertClean(deck, opts = {}) {
 module.exports = {
   PALETTES, TYPE, EMU_W, EMU_H,
   palette, newDeck, readableOn,
-  kicker, titleClaim, estimateWrappedLines, card, kpi, kpiRail, pill, bullets, hbars, timeline, footer, divider,
+  kicker, titleClaim, estimateWrappedLines, card, kpi, kpiRail, pill, bullets, hbars, chart, timeline, footer, divider,
   image, listImages, scoreName, pickImage, planImages, ensureAssets, assertAssets,
   box, node, connector, flow,
   lint, assertClean,
