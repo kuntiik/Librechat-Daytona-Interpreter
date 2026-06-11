@@ -905,6 +905,53 @@ def create_app(
         return response
 
     @app.get(
+        "/sessions/{session_id}/objects/{file_id}",
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    async def get_object_info(
+        session_id: str,
+        file_id: str,
+        kind: str | None = None,
+        id: str | None = None,
+        version: str | None = None,
+        _: None = Depends(require_api_key),
+    ) -> dict[str, Any]:
+        """Freshness probe for identity-keyed bucket files.
+
+        LibreChat's `getSessionInfo` polls `GET /sessions/<key>/objects/<fileId>`
+        after an upload and treats a 404 (or any error) as a cache miss, which
+        makes it re-upload the file every turn and leaves the UI upload spinner
+        stuck. For bucket storage we resolve the file by its identity key plus
+        basename and return its last-modified time so a freshly uploaded file
+        reads as active (LibreChat's `checkIfActive` accepts < 23h).
+        """
+        key = bucket_key(kind, id, version) if kind and id else session_id
+        target_path = resolve_file_reference(file_id)
+        filename = PurePosixPath(target_path).name
+        stored = bucket_store.path(key, filename)
+        if stored is None:
+            raise APIError(
+                status_code=404,
+                code="object_not_found",
+                message=f"No object '{filename}' in bucket '{key}'.",
+            )
+        stat = stored.stat()
+        last_modified = _utc_isoformat(datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc))
+        logger.info(
+            "LibreChat -> interface /sessions/%s/objects (bucket) name=%s lastModified=%s",
+            key,
+            filename,
+            last_modified,
+        )
+        return {
+            "session_id": key,
+            "sessionId": key,
+            "name": filename,
+            "size": stat.st_size,
+            "lastModified": last_modified,
+        }
+
+    @app.get(
         "/download/{session_id}/{file_id}",
         responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
     )

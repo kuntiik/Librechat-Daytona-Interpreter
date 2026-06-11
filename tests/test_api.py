@@ -229,6 +229,38 @@ def test_skill_upload_bucket_key_includes_version() -> None:
     assert response.json()["storage_session_id"] == "skill:pptx:v:3"
 
 
+def test_object_info_returns_lastmodified_for_bucket_file() -> None:
+    client, gateway = make_client()
+    body = _upload_to_bucket(client, "user", "u-1", "data.xlsx", b"xlsx-bytes")
+    key = body["storage_session_id"]
+    file_id = body["files"][0]["file_id"]
+
+    response = client.get(
+        f"/sessions/{key}/objects/{file_id}",
+        headers={"x-api-key": "test-adapter-key"},
+        params={"kind": "user", "id": "u-1"},
+    )
+    assert response.status_code == 200, response.text
+    info = response.json()
+    assert info["name"] == "data.xlsx"
+    assert info["size"] == len(b"xlsx-bytes")
+    assert info["lastModified"]
+    # Probing a bucket file must not spin up a sandbox.
+    assert gateway._counter == 0
+
+
+def test_object_info_404_for_missing_object() -> None:
+    client, _ = make_client()
+    _upload_to_bucket(client, "user", "u-2", "present.xlsx", b"data")
+
+    response = client.get(
+        "/sessions/user:u-2/objects/absent.xlsx",
+        headers={"x-api-key": "test-adapter-key"},
+        params={"kind": "user", "id": "u-2"},
+    )
+    assert response.status_code == 404
+
+
 def test_exec_copies_bucket_files_into_conversation_sandbox() -> None:
     client, gateway = make_client()
     _upload_to_bucket(client, "agent", "promo", "_TEMPLATE_promo_dohoda.xlsx", b"template")
