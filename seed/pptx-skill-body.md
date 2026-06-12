@@ -78,6 +78,7 @@ D.kpiRail(deck, s, [
   { value:"1.9x", label:"Net retention" },
   { value:"11", label:"New markets" },
 ], { y: 5.4 });
+D.source(deck, s, "Source: Internal finance review, Q3 FY24.");  // citations go here
 D.footer(deck, s, { left: "Q3 Operating Review", page: 1 });
 
 D.assertClean(deck);                            // GATE — throws on overlaps / out-of-bounds
@@ -88,9 +89,14 @@ deck.save("/mnt/data/q3-operating-review.pptx").then(() => console.log("saved"))
 or wrap in an `(async () => { … })()`.)
 
 Helpers: `newDeck, slide, kicker, titleClaim, card, kpi, kpiRail, pill, bullets,
-hbars, timeline, footer, divider`. Palettes: `forest, midnight, terracotta,
+hbars, timeline, footer, source, divider`. Palettes: `forest, midnight, terracotta,
 ocean, charcoal, berry, teal` (or pass your own hex). Kickers are emitted as
 named marker/label pairs so alignment is verifiable.
+
+**Source citations — use `D.source(deck, s, "Source: …")`, never a hand-rolled
+`addText` at the bottom.** `footer()` owns the very bottom band (y≈7.1); a
+freehand source line lands in it and the geometry gate flags the overlap.
+`D.source` places the citation in a reserved slot just above the footer.
 
 **Diagrams — use the primitives, never hand-roll `addShape`.** For flows,
 pipelines, comparison grids, and node diagrams use `box`, `node`, `connector`,

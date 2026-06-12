@@ -316,6 +316,18 @@ function footer(deck, s, { left, page } = {}) {
   if (page != null) s.addText(String(page).padStart(2, "0"), { x: 12.5, y: 7.08, w: 0.3, h: 0.24, fontFace: deck.T.body, fontSize: 9, bold: true, color: deck.C.accent, align: "right", margin: 0 });
 }
 
+/**
+ * Source / citation line. Reserved slot just above the footer band, stopping
+ * short of the page-number marker — so it never collides with footer({left,page}).
+ * Use this instead of a hand-rolled addText; a freehand bottom line lands in the
+ * footer's band (y~7.1) and trips the geometry gate.
+ */
+function source(deck, s, text) {
+  const str = typeof text === "string" ? text : text && text.text;
+  if (!str) return;
+  s.addText(String(str), { x: 0.6, y: 6.84, w: 11.55, h: 0.2, fontFace: deck.T.body, fontSize: 8.5, italic: true, color: deck.C.muted, align: "left", valign: "top", margin: 0, fit: "shrink" });
+}
+
 /** Full-bleed section divider on the ink background. */
 function divider(deck, s, title, { kickerText, page } = {}) {
   s.addShape(deck.pptx.ShapeType.rect, { x: 0, y: 0, w: EMU_W, h: EMU_H, fill: { color: deck.C.ink }, line: { color: deck.C.ink } });
@@ -886,8 +898,10 @@ function lint(deck, opts = {}) {
         const contained = ratio > 0.95;
 
         if (a.isText && b.isText) {
-          if (ov.w > 0.08 && ov.h > 0.05) {
+          if (ov.w > 0.4 && ov.h > 0.4) {
             errors.push(`${label}: text #${a.index} and text #${b.index} overlap (${ov.w.toFixed(2)}"x${ov.h.toFixed(2)}"). Reposition so text never stacks.`);
+          } else if (ov.w > 0.08 && ov.h > 0.05) {
+            warnings.push(`${label}: text #${a.index} and text #${b.index} graze (${ov.w.toFixed(2)}"x${ov.h.toFixed(2)}"). Declared boxes clip — pptxgenjs boxes over-state height; the render gate (qa_deck.sh) measures real text. Verify the rendered slide, do not loop on this.`);
           }
         } else if ((a.isText && b.isImage) || (a.isImage && b.isText)) {
           if (!contained && ov.area > 0.05) {
@@ -918,7 +932,7 @@ function assertClean(deck, opts = {}) {
 module.exports = {
   PALETTES, TYPE, EMU_W, EMU_H,
   palette, newDeck, readableOn,
-  kicker, titleClaim, estimateWrappedLines, card, kpi, kpiRail, pill, bullets, hbars, chart, timeline, footer, divider,
+  kicker, titleClaim, estimateWrappedLines, card, kpi, kpiRail, pill, bullets, hbars, chart, timeline, footer, source, divider,
   image, listImages, scoreName, pickImage, planImages, ensureAssets, assertAssets,
   box, node, connector, flow, safeFlowWithNotes,
   lint, assertClean,
