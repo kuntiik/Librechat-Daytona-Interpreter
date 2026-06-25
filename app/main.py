@@ -483,6 +483,10 @@ def create_app(
 ) -> FastAPI:
     global WORKSPACE_ROOT
     runtime_settings = settings or get_settings()
+    if runtime_settings.CODEAPI_AUTH_MODE == "api_key" and not runtime_settings.ADAPTER_API_KEY:
+        raise RuntimeError(
+            "ADAPTER_API_KEY must be set when CODEAPI_AUTH_MODE=api_key"
+        )
     set_workspace_root(runtime_settings.WORKSPACE_ROOT)
     WORKSPACE_ROOT = get_workspace_root()
     _configure_logging(runtime_settings.LOG_LEVEL)

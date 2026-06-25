@@ -74,6 +74,7 @@ class FakeDaytonaGateway:
 
 def make_client(bucket_root: str | None = None) -> tuple[TestClient, FakeDaytonaGateway]:
     settings = Settings(
+        _env_file=None,
         ADAPTER_API_KEY="test-adapter-key",
         CODEAPI_AUTH_MODE="api_key",
         DAYTONA_API_KEY="test-daytona-key",

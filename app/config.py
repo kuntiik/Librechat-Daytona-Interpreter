@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     ADAPTER_API_KEY: str | None = None
-    CODEAPI_AUTH_MODE: str = "jwt"  # "jwt" | "api_key"
+    CODEAPI_AUTH_MODE: Literal["jwt", "api_key"] = "jwt"
     CODEAPI_JWT_PUBLIC_KEY_BASE64: str | None = None
     CODEAPI_JWT_ALGORITHM: str = "EdDSA"
     CODEAPI_JWT_ISSUER: str = "librechat"
