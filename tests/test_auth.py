@@ -1,13 +1,20 @@
 import base64
+import tempfile
 import time
 
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
+from fastapi.testclient import TestClient
 
 from app.auth import verify_bearer_jwt
+from app.config import Settings
 from app.errors import APIError
+from app.main import create_app
+from app.session_store import MemorySessionStore
+
+from tests.test_api import FakeDaytonaGateway
 
 
 class _Cfg:
@@ -116,3 +123,41 @@ def test_non_eddsa_config_algorithm_rejected():
     with pytest.raises(APIError) as e:
         verify_bearer_jwt(f"Bearer {token}", cfg)
     assert e.value.status_code == 401
+
+
+def _jwt_client(pub_b64):
+    settings = Settings(
+        CODEAPI_AUTH_MODE="jwt",
+        CODEAPI_JWT_PUBLIC_KEY_BASE64=pub_b64,
+        DAYTONA_API_KEY="test-daytona-key",
+        BUCKET_ROOT=tempfile.mkdtemp(prefix="lc-buckets-"),
+    )
+    app = create_app(
+        settings=settings,
+        store=MemorySessionStore(),
+        gateway=FakeDaytonaGateway(),
+        enable_cleanup=False,
+    )
+    return TestClient(app)
+
+
+def test_protected_route_requires_auth():
+    _, pub_b64 = _keypair()
+    client = _jwt_client(pub_b64)
+    r = client.post("/exec", json={"code": "print(1)", "lang": "python"})
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "unauthorized"
+
+
+def test_protected_route_accepts_valid_token():
+    priv, pub_b64 = _keypair()
+    client = _jwt_client(pub_b64)
+    token = _mint(priv)
+    r = client.post(
+        "/exec",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"code": "print(1)", "lang": "python"},
+    )
+    # A validly-minted token clears the auth dependency; the request may then
+    # succeed (fake gateway) or fail downstream, but it must NOT be a 401.
+    assert r.status_code != 401

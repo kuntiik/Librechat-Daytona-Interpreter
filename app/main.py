@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
-from .auth import validate_api_key
+from .auth import validate_api_key, verify_bearer_jwt
 from .buckets import BucketStore, bucket_key
 from .cleanup import SessionCleanupWorker
 from .config import Settings, get_settings
@@ -543,9 +543,13 @@ def create_app(
     app.state.bucket_store = bucket_store
 
     async def require_api_key(
+        authorization: Annotated[str | None, Header()] = None,
         x_api_key: Annotated[str | None, Header(alias="x-api-key")] = None,
     ) -> None:
-        validate_api_key(x_api_key, runtime_settings.ADAPTER_API_KEY)
+        if runtime_settings.CODEAPI_AUTH_MODE == "api_key":
+            validate_api_key(x_api_key, runtime_settings.ADAPTER_API_KEY or "")
+            return
+        verify_bearer_jwt(authorization, runtime_settings)
 
     @app.exception_handler(APIError)
     async def api_error_handler(_: Any, exc: APIError) -> JSONResponse:
