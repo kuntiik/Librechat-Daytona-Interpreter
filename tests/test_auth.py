@@ -127,7 +127,9 @@ def test_non_eddsa_config_algorithm_rejected():
 
 def _jwt_client(pub_b64):
     settings = Settings(
+        _env_file=None,
         CODEAPI_AUTH_MODE="jwt",
+        CODEAPI_JWT_KID=None,
         CODEAPI_JWT_PUBLIC_KEY_BASE64=pub_b64,
         DAYTONA_API_KEY="test-daytona-key",
         BUCKET_ROOT=tempfile.mkdtemp(prefix="lc-buckets-"),
