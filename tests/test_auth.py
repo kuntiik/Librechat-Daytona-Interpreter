@@ -82,3 +82,37 @@ def test_tampered_signature_rejected():
     with pytest.raises(APIError) as e:
         verify_bearer_jwt(f"Bearer {token}", _Cfg(pub_b64))
     assert e.value.status_code == 401
+
+
+def test_none_algorithm_rejected():
+    priv, pub_b64 = _keypair()
+    # token with alg=none, no signature
+    token = jwt.encode(
+        {"iss": "librechat", "aud": "code-interpreter",
+         "exp": int(time.time()) + 300, "iat": int(time.time())},
+        key=None, algorithm="none",
+    )
+    with pytest.raises(APIError) as e:
+        verify_bearer_jwt(f"Bearer {token}", _Cfg(pub_b64))
+    assert e.value.status_code == 401
+
+
+def test_missing_exp_rejected():
+    priv, pub_b64 = _keypair()
+    token = jwt.encode(
+        {"iss": "librechat", "aud": "code-interpreter", "iat": int(time.time())},
+        priv, algorithm="EdDSA",
+    )
+    with pytest.raises(APIError) as e:
+        verify_bearer_jwt(f"Bearer {token}", _Cfg(pub_b64))
+    assert e.value.status_code == 401
+
+
+def test_non_eddsa_config_algorithm_rejected():
+    priv, pub_b64 = _keypair()
+    token = _mint(priv)
+    cfg = _Cfg(pub_b64)
+    cfg.CODEAPI_JWT_ALGORITHM = "HS256"  # operator misconfig -> must be refused
+    with pytest.raises(APIError) as e:
+        verify_bearer_jwt(f"Bearer {token}", cfg)
+    assert e.value.status_code == 401

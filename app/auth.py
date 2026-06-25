@@ -8,6 +8,8 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
 from .errors import APIError
 
+_ALLOWED_JWT_ALGORITHMS = frozenset({"EdDSA"})
+
 
 def validate_api_key(received_key: str | None, expected_key: str) -> None:
     if not received_key or received_key != expected_key:
@@ -37,6 +39,18 @@ def verify_bearer_jwt(authorization: str | None, settings) -> dict:
             status_code=401,
             code="unauthorized",
             message="Code API JWT public key is not configured.",
+        )
+    if settings.CODEAPI_JWT_ALGORITHM not in _ALLOWED_JWT_ALGORITHMS:
+        raise APIError(
+            status_code=401,
+            code="unauthorized",
+            message="JWT algorithm not permitted.",
+        )
+    if not settings.CODEAPI_JWT_ISSUER or not settings.CODEAPI_JWT_AUDIENCE:
+        raise APIError(
+            status_code=401,
+            code="unauthorized",
+            message="JWT issuer/audience not configured.",
         )
     public_key = _load_public_key(settings.CODEAPI_JWT_PUBLIC_KEY_BASE64)
     if settings.CODEAPI_JWT_KID:
