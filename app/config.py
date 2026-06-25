@@ -6,7 +6,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    ADAPTER_API_KEY: str
+    ADAPTER_API_KEY: str | None = None
+    CODEAPI_AUTH_MODE: str = "jwt"  # "jwt" | "api_key"
+    CODEAPI_JWT_PUBLIC_KEY_BASE64: str | None = None
+    CODEAPI_JWT_ALGORITHM: str = "EdDSA"
+    CODEAPI_JWT_ISSUER: str = "librechat"
+    CODEAPI_JWT_AUDIENCE: str = "code-interpreter"
+    CODEAPI_JWT_KID: str | None = None
     DAYTONA_API_KEY: str
     DAYTONA_API_URL: str | None = None
     DAYTONA_SANDBOX_CPU: int = 1
