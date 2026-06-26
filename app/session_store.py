@@ -16,6 +16,7 @@ class SessionRecord:
     sandbox_id: str
     language: str
     last_access: float
+    owner: str | None = None
 
 
 class SessionStore(Protocol):
@@ -44,6 +45,7 @@ class MemorySessionStore:
             sandbox_id=record.sandbox_id,
             language=record.language,
             last_access=record.last_access,
+            owner=record.owner,
         )
 
     async def get(self, session_id: str) -> SessionRecord | None:
@@ -93,11 +95,13 @@ class RedisSessionStore:
         last_access_raw = raw.get("last_access")
         if not sandbox_id or not language or last_access_raw is None:
             return None
+        owner = raw.get("owner") or None
         return SessionRecord(
             session_id=session_id,
             sandbox_id=sandbox_id,
             language=language,
             last_access=float(last_access_raw),
+            owner=owner,
         )
 
     async def get(self, session_id: str) -> SessionRecord | None:
@@ -106,14 +110,14 @@ class RedisSessionStore:
 
     async def upsert(self, record: SessionRecord) -> None:
         session_key = self._session_key(record.session_id)
-        await self._redis.hset(
-            session_key,
-            mapping={
-                "sandbox_id": record.sandbox_id,
-                "language": record.language,
-                "last_access": str(record.last_access),
-            },
-        )
+        mapping = {
+            "sandbox_id": record.sandbox_id,
+            "language": record.language,
+            "last_access": str(record.last_access),
+        }
+        if record.owner:
+            mapping["owner"] = record.owner
+        await self._redis.hset(session_key, mapping=mapping)
         await self._redis.sadd(self._index_key, record.session_id)
 
     async def touch(self, session_id: str, last_access: float) -> None:

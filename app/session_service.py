@@ -33,10 +33,25 @@ class SessionService:
     def _now(self) -> float:
         return self._clock()
 
-    async def get_or_create_exec_session(self, session_id: str | None, language: str) -> SessionRecord:
+    @staticmethod
+    def _enforce_owner(record: SessionRecord, owner: str | None) -> None:
+        if record.owner and owner and record.owner != owner:
+            raise APIError(
+                status_code=403,
+                code="forbidden",
+                message="Session does not belong to this principal.",
+            )
+
+    async def get_or_create_exec_session(
+        self,
+        session_id: str | None,
+        language: str,
+        owner: str | None = None,
+    ) -> SessionRecord:
         if session_id:
             existing = await self._store.get(session_id)
             if existing is not None:
+                self._enforce_owner(existing, owner)
                 if _normalized_language(existing.language) != _normalized_language(language):
                     raise APIError(
                         status_code=409,
@@ -48,27 +63,29 @@ class SessionService:
                     )
                 await self.touch(session_id)
                 return existing
-            return await self._create_session(session_id, language)
+            return await self._create_session(session_id, language, owner=owner)
 
         generated_session_id = str(uuid4())
-        return await self._create_session(generated_session_id, language)
+        return await self._create_session(generated_session_id, language, owner=owner)
 
     async def get_or_create_upload_session(
         self,
         session_id: str | None,
         default_language: str = "python",
+        owner: str | None = None,
     ) -> SessionRecord:
         if session_id:
             existing = await self._store.get(session_id)
             if existing is not None:
+                self._enforce_owner(existing, owner)
                 await self.touch(session_id)
                 return existing
-            return await self._create_session(session_id, default_language)
+            return await self._create_session(session_id, default_language, owner=owner)
 
         generated_session_id = str(uuid4())
-        return await self._create_session(generated_session_id, default_language)
+        return await self._create_session(generated_session_id, default_language, owner=owner)
 
-    async def require_session(self, session_id: str) -> SessionRecord:
+    async def require_session(self, session_id: str, owner: str | None = None) -> SessionRecord:
         existing = await self._store.get(session_id)
         if existing is None:
             raise APIError(
@@ -76,6 +93,7 @@ class SessionService:
                 code="session_not_found",
                 message=f"Session '{session_id}' does not exist.",
             )
+        self._enforce_owner(existing, owner)
         await self.touch(session_id)
         return existing
 
@@ -85,13 +103,19 @@ class SessionService:
     async def delete_session(self, session_id: str) -> None:
         await self._store.delete(session_id)
 
-    async def _create_session(self, session_id: str, language: str) -> SessionRecord:
+    async def _create_session(
+        self,
+        session_id: str,
+        language: str,
+        owner: str | None = None,
+    ) -> SessionRecord:
         sandbox_id = self._gateway.create_sandbox(language)
         record = SessionRecord(
             session_id=session_id,
             sandbox_id=sandbox_id,
             language=language,
             last_access=self._now(),
+            owner=owner,
         )
         await self._store.upsert(record)
         return record

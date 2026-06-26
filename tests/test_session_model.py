@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
+from app.errors import APIError
 from app.session_service import SessionService
 from app.session_store import MemorySessionStore
 
@@ -45,3 +48,58 @@ def test_distinct_session_ids_get_isolated_sandboxes() -> None:
     assert first.session_id != second.session_id
     assert first.sandbox_id != second.sandbox_id
     assert gateway._counter == 2
+
+
+def test_same_owner_reuses_sandbox() -> None:
+    service, gateway = _make_service()
+    sid = "vendor-session-owned"
+
+    first = asyncio.run(service.get_or_create_exec_session(sid, "python", owner="userA"))
+    second = asyncio.run(service.get_or_create_exec_session(sid, "python", owner="userA"))
+
+    assert first.sandbox_id == second.sandbox_id
+    assert gateway._counter == 1
+
+
+def test_cross_principal_reuse_is_rejected() -> None:
+    service, _ = _make_service()
+    sid = "vendor-session-owned"
+
+    asyncio.run(service.get_or_create_exec_session(sid, "python", owner="userA"))
+
+    with pytest.raises(APIError) as excinfo:
+        asyncio.run(service.get_or_create_exec_session(sid, "python", owner="userB"))
+    assert excinfo.value.status_code == 403
+
+
+def test_owner_none_is_permissive_against_owned_session() -> None:
+    service, gateway = _make_service()
+    sid = "vendor-session-owned"
+
+    asyncio.run(service.get_or_create_exec_session(sid, "python", owner="userA"))
+    record = asyncio.run(service.get_or_create_exec_session(sid, "python", owner=None))
+
+    assert record.owner == "userA"
+    assert gateway._counter == 1
+
+
+def test_ownerless_session_accepts_named_owner() -> None:
+    service, gateway = _make_service()
+    sid = "legacy-session"
+
+    asyncio.run(service.get_or_create_exec_session(sid, "python", owner=None))
+    record = asyncio.run(service.get_or_create_exec_session(sid, "python", owner="userA"))
+
+    assert record.owner is None
+    assert gateway._counter == 1
+
+
+def test_require_session_rejects_cross_principal() -> None:
+    service, _ = _make_service()
+    sid = "vendor-session-owned"
+
+    asyncio.run(service.get_or_create_exec_session(sid, "python", owner="userA"))
+
+    with pytest.raises(APIError) as excinfo:
+        asyncio.run(service.require_session(sid, owner="userB"))
+    assert excinfo.value.status_code == 403

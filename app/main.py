@@ -549,11 +549,11 @@ def create_app(
     async def require_api_key(
         authorization: Annotated[str | None, Header()] = None,
         x_api_key: Annotated[str | None, Header(alias="x-api-key")] = None,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         if runtime_settings.CODEAPI_AUTH_MODE == "api_key":
             validate_api_key(x_api_key, runtime_settings.ADAPTER_API_KEY or "")
-            return
-        verify_bearer_jwt(authorization, runtime_settings)
+            return None
+        return verify_bearer_jwt(authorization, runtime_settings)
 
     @app.exception_handler(APIError)
     async def api_error_handler(_: Any, exc: APIError) -> JSONResponse:
@@ -594,8 +594,9 @@ def create_app(
     )
     async def exec_code(
         payload: ExecRequest,
-        _: None = Depends(require_api_key),
+        claims: dict[str, Any] | None = Depends(require_api_key),
     ) -> ExecResponse:
+        owner = (claims or {}).get("sub")
         logger.info(
             "LibreChat -> interface /exec session_id=%s lang=%s code_len=%s code_preview=%s",
             payload.session_id,
@@ -607,7 +608,7 @@ def create_app(
         language = normalize_language(payload.lang)
         requested_session_id = payload.session_id or _extract_session_id_from_files(payload.files)
         try:
-            session = await service.get_or_create_exec_session(requested_session_id, language)
+            session = await service.get_or_create_exec_session(requested_session_id, language, owner=owner)
         except APIError:
             raise
         except Exception as exc:
@@ -702,8 +703,9 @@ def create_app(
     )
     async def upload_files(
         request: Request,
-        _: None = Depends(require_api_key),
+        claims: dict[str, Any] | None = Depends(require_api_key),
     ) -> UploadResponse:
+        owner = (claims or {}).get("sub")
         form_data = await request.form()
         session_id: str | None = None
         for key in ("session_id", "sessionId", "entity_id", "entityId"):
@@ -749,7 +751,7 @@ def create_app(
 
         # Legacy path (chat uploads / callers that only send a session id):
         # keep today's sandbox-backed behavior so nothing regresses.
-        return await _upload_to_sandbox(files=files, session_id=session_id)
+        return await _upload_to_sandbox(files=files, session_id=session_id, owner=owner)
 
     async def _upload_to_bucket(
         files: list[UploadFile | StarletteUploadFile],
@@ -806,10 +808,13 @@ def create_app(
     async def _upload_to_sandbox(
         files: list[UploadFile | StarletteUploadFile],
         session_id: str | None,
+        owner: str | None = None,
     ) -> UploadResponse:
         service, gateway_client = _get_runtime_clients(ensure_session_service, ensure_gateway)
         try:
-            session = await service.get_or_create_upload_session(session_id=session_id, default_language="python")
+            session = await service.get_or_create_upload_session(
+                session_id=session_id, default_language="python", owner=owner
+            )
         except APIError:
             raise
         except Exception as exc:
@@ -888,12 +893,13 @@ def create_app(
     )
     async def list_files(
         session_id: str,
-        _: None = Depends(require_api_key),
+        claims: dict[str, Any] | None = Depends(require_api_key),
     ) -> FilesResponse:
+        owner = (claims or {}).get("sub")
         logger.info("LibreChat -> interface /files session_id=%s", session_id)
         service, gateway_client = _get_runtime_clients(ensure_session_service, ensure_gateway)
         try:
-            session = await service.require_session(session_id)
+            session = await service.require_session(session_id, owner=owner)
         except APIError:
             raise
         except Exception as exc:
@@ -922,7 +928,7 @@ def create_app(
         kind: str | None = None,
         id: str | None = None,
         version: str | None = None,
-        _: None = Depends(require_api_key),
+        _: dict[str, Any] | None = Depends(require_api_key),
     ) -> dict[str, Any]:
         """Freshness probe for identity-keyed bucket files.
 
@@ -966,12 +972,13 @@ def create_app(
     async def download_file(
         session_id: str,
         file_id: str,
-        _: None = Depends(require_api_key),
+        claims: dict[str, Any] | None = Depends(require_api_key),
     ) -> StreamingResponse:
+        owner = (claims or {}).get("sub")
         logger.info("LibreChat -> interface /download session_id=%s file_id=%s", session_id, file_id)
         service, gateway_client = _get_runtime_clients(ensure_session_service, ensure_gateway)
         try:
-            session = await service.require_session(session_id)
+            session = await service.require_session(session_id, owner=owner)
         except APIError:
             raise
         except Exception as exc:
@@ -1032,12 +1039,13 @@ def create_app(
     async def delete_file(
         session_id: str,
         file_id: str,
-        _: None = Depends(require_api_key),
+        claims: dict[str, Any] | None = Depends(require_api_key),
     ) -> DeleteResponse:
+        owner = (claims or {}).get("sub")
         logger.info("LibreChat -> interface /files DELETE session_id=%s file_id=%s", session_id, file_id)
         service, gateway_client = _get_runtime_clients(ensure_session_service, ensure_gateway)
         try:
-            session = await service.require_session(session_id)
+            session = await service.require_session(session_id, owner=owner)
         except APIError:
             raise
         except Exception as exc:
