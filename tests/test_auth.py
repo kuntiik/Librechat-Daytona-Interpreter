@@ -45,6 +45,7 @@ def _mint(priv_pem, **overrides):
     claims = {
         "iss": "librechat",
         "aud": "code-interpreter",
+        "sub": "user-test",
         "exp": int(time.time()) + 300,
         "iat": int(time.time()),
     }
@@ -123,6 +124,41 @@ def test_non_eddsa_config_algorithm_rejected():
     with pytest.raises(APIError) as e:
         verify_bearer_jwt(f"Bearer {token}", cfg)
     assert e.value.status_code == 401
+
+
+def test_missing_sub_rejected():
+    priv, pub_b64 = _keypair()
+    token = jwt.encode(
+        {"iss": "librechat", "aud": "code-interpreter",
+         "exp": int(time.time()) + 300, "iat": int(time.time())},
+        priv, algorithm="EdDSA",
+    )
+    with pytest.raises(APIError) as e:
+        verify_bearer_jwt(f"Bearer {token}", _Cfg(pub_b64))
+    assert e.value.status_code == 401
+
+
+def test_empty_sub_rejected():
+    priv, pub_b64 = _keypair()
+    token = jwt.encode(
+        {"iss": "librechat", "aud": "code-interpreter", "sub": "",
+         "exp": int(time.time()) + 300, "iat": int(time.time())},
+        priv, algorithm="EdDSA",
+    )
+    with pytest.raises(APIError) as e:
+        verify_bearer_jwt(f"Bearer {token}", _Cfg(pub_b64))
+    assert e.value.status_code == 401
+
+
+def test_valid_token_with_sub_accepted():
+    priv, pub_b64 = _keypair()
+    token = jwt.encode(
+        {"iss": "librechat", "aud": "code-interpreter", "sub": "user-123",
+         "exp": int(time.time()) + 300, "iat": int(time.time())},
+        priv, algorithm="EdDSA",
+    )
+    claims = verify_bearer_jwt(f"Bearer {token}", _Cfg(pub_b64))
+    assert claims["sub"] == "user-123"
 
 
 def _jwt_client(pub_b64):

@@ -60,13 +60,13 @@ def verify_bearer_jwt(authorization: str | None, settings) -> dict:
                 status_code=401, code="unauthorized", message="Unexpected token kid."
             )
     try:
-        return jwt.decode(
+        claims = jwt.decode(
             token,
             public_key,
             algorithms=[settings.CODEAPI_JWT_ALGORITHM],
             audience=settings.CODEAPI_JWT_AUDIENCE,
             issuer=settings.CODEAPI_JWT_ISSUER,
-            options={"require": ["exp", "iss", "aud"]},
+            options={"require": ["exp", "iss", "aud", "sub"]},
         )
     except jwt.PyJWTError as exc:
         raise APIError(
@@ -74,4 +74,12 @@ def verify_bearer_jwt(authorization: str | None, settings) -> dict:
             code="unauthorized",
             message=f"JWT verification failed: {exc}",
         )
+    sub = claims.get("sub")
+    if not isinstance(sub, str) or not sub:
+        raise APIError(
+            status_code=401,
+            code="unauthorized",
+            message="JWT missing sub claim.",
+        )
+    return claims
 

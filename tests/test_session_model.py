@@ -94,6 +94,27 @@ def test_ownerless_session_accepts_named_owner() -> None:
     assert gateway._counter == 1
 
 
+def test_upload_cross_principal_reuse_is_rejected() -> None:
+    service, _ = _make_service()
+    sid = "vendor-upload-owned"
+
+    asyncio.run(service.get_or_create_upload_session(sid, owner="userA"))
+
+    with pytest.raises(APIError) as excinfo:
+        asyncio.run(service.get_or_create_upload_session(sid, owner="userB"))
+    assert excinfo.value.status_code == 403
+
+
+def test_require_session_owner_none_is_permissive() -> None:
+    service, _ = _make_service()
+    sid = "vendor-session-owned"
+
+    asyncio.run(service.get_or_create_exec_session(sid, "python", owner="userA"))
+    record = asyncio.run(service.require_session(sid, owner=None))
+
+    assert record.owner == "userA"
+
+
 def test_require_session_rejects_cross_principal() -> None:
     service, _ = _make_service()
     sid = "vendor-session-owned"
