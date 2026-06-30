@@ -2,6 +2,8 @@
 
 FastAPI service that exposes a LibreChat Code Interpreter-compatible HTTP API and executes code/files inside Daytona sandboxes.
 
+> **Full integration reference:** [`DAYTONA_INTEGRATION.md`](./DAYTONA_INTEGRATION.md) — architecture, JWT auth, session isolation boundaries, the adapter API, and how to build/roll a new sandbox base image.
+
 Flow:
 
 `LibreChat -> HTTP adapter (this service) -> Daytona sandbox`
