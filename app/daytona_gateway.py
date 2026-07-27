@@ -488,10 +488,19 @@ class DaytonaGateway:
         # in a tiny python program that shells out via subprocess.run, then
         # send it through `code_interpreter.run_code` — the only path that
         # reliably routes to the sandbox's python.
+        #
+        # The snippet travels as a script file, never as an argv element:
+        # execve caps a single argument at MAX_ARG_STRLEN (128 KiB), and
+        # agent-generated steps routinely inline larger payloads (a JSON blob
+        # from a previous tool call), which used to fail the whole exec with
+        # `OSError: [Errno 7] Argument list too long: '/bin/bash'`. The
+        # wrapper source itself reaches the sandbox over stdin, so it has no
+        # such limit. The script lives outside the workspace so it is not
+        # reported back to LibreChat as a generated file.
         from .config import get_settings
         workspace = get_settings().WORKSPACE_ROOT or "/tmp/workspace"
         wrapper = (
-            "import os, subprocess, sys\n"
+            "import os, subprocess, sys, tempfile\n"
             f"os.makedirs({workspace!r}, exist_ok=True)\n"
             "try:\n"
             "    os.makedirs('/mnt', exist_ok=True)\n"
@@ -499,9 +508,14 @@ class DaytonaGateway:
             f"        os.symlink({workspace!r}, '/mnt/data')\n"
             "except Exception:\n"
             "    pass\n"
-            "r = subprocess.run(['/bin/bash','-c', "
-            + repr(code)
-            + f"], capture_output=True, text=True, cwd={workspace!r})\n"
+            "fd, script = tempfile.mkstemp(prefix='lc-exec-', suffix='.sh')\n"
+            "with os.fdopen(fd, 'w') as handle:\n"
+            "    handle.write(" + repr(code) + ")\n"
+            "try:\n"
+            "    r = subprocess.run(['/bin/bash', script], capture_output=True, "
+            f"text=True, cwd={workspace!r})\n"
+            "finally:\n"
+            "    os.unlink(script)\n"
             "sys.stdout.write(r.stdout)\n"
             "sys.stderr.write(r.stderr)\n"
             "sys.exit(r.returncode)\n"
